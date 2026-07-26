@@ -161,7 +161,7 @@ class SymmFMClass(nn.Module):
             return self.vae.decode(z)
     
     @torch.no_grad()
-    def sample(self, n_samples, mask, train=True, accelerate=None, fid=False):
+    def sample(self, n_samples, mask=None, train=True, accelerate=None, fid=False, labels=None):
         '''
         Sample images
         :param n_samples: number of samples
@@ -169,7 +169,14 @@ class SymmFMClass(nn.Module):
         :param train: if True, sample during training
         :param accelerate: Accelerator object
         :param fid: if True, return the samples
+        :param labels: optional class labels used to build a mask when no explicit mask is provided
         '''
+        if mask is None:
+            if labels is None:
+                raise ValueError('Either mask or labels must be provided')
+            mask = self.dequantize_class(labels)
+        mask = mask.to(self.device)
+
         x_0 = torch.randn(n_samples, self.channels, self.img_size, self.img_size, device=self.device)
         x_0 = torch.cat([x_0, mask], dim=1)
 
