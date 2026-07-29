@@ -31,12 +31,15 @@ def build_arg_parser():
     parser.add_argument("--solver", type=str, default="euler", help="ODE solver")
     parser.add_argument("--step_size", type=float, default=0.04, help="ODE solver step size")
     parser.add_argument("--dataset", type=str, default="pneumoniamnist", help="Dataset name")
+    # Defaults match the published RGB_28 pneumoniamnist checkpoint, derived from its
+    # state-dict shapes: stem width 64, four levels [1,2,2,2] with 2 res-blocks each,
+    # attention only at the first downsample (ds=2).
     parser.add_argument("--model_channels", type=int, default=64, help="Model channel count")
     parser.add_argument("--num_res_blocks", type=int, default=2, help="Residual blocks")
-    parser.add_argument("--channel_mult", type=int, nargs="+", default=[1, 2, 2], help="Channel multipliers")
+    parser.add_argument("--channel_mult", type=int, nargs="+", default=[1, 2, 2, 2], help="Channel multipliers")
     parser.add_argument("--num_heads", type=int, default=4, help="Attention heads")
-    parser.add_argument("--num_head_channels", type=int, default=32, help="Attention head channels")
-    parser.add_argument("--attention_resolutions", type=int, nargs="+", default=[4], help="Attention resolutions")
+    parser.add_argument("--num_head_channels", type=int, default=64, help="Attention head channels")
+    parser.add_argument("--attention_resolutions", type=int, nargs="+", default=[2], help="Attention resolutions")
     parser.add_argument("--solver_lib", type=str, default="torchdiffeq", help="Solver library")
     parser.add_argument("--rgb_mask", action="store_true", default=False, help="Use RGB masks")
     parser.add_argument("--latent", action="store_true", default=False, help="Use latent implementation")
