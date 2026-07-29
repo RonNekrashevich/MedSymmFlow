@@ -89,8 +89,14 @@ def main() -> None:
     normal_dir.mkdir(parents=True, exist_ok=True)
     pneumonia_dir.mkdir(parents=True, exist_ok=True)
 
-    image_shape, channels, _ = pick_dataset(args.dataset, "val", args.image_size, args.num_workers, args.num_workers)
-    model_args = parse_args_SymmetricFlowMatchingClass()
+    image_shape, channels, _ = pick_dataset(args.dataset, "val", args.image_size, 1, args.num_workers)
+
+    original_argv = sys.argv.copy()
+    try:
+        sys.argv = [sys.argv[0]]
+        model_args = parse_args_SymmetricFlowMatchingClass()
+    finally:
+        sys.argv = original_argv
     model_args.train = False
     model_args.sample = True
     model_args.dataset = args.dataset
