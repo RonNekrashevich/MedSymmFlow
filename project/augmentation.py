@@ -445,6 +445,73 @@ class Experiment:
                 self.run_supervised("S3", s3_ds, np.concatenate([sub_labels, np.array(add_df.label)]),
                                     budget, seed, weighted=False)
 
+    # ---------------------------------------------- distillation diagnostics
+    def run_diagnostic_d1(self):
+        """D1: train on synthetic ONLY, test on real. If D1 recovers baseline/C1-level
+        AUC, the synthetic set alone carries the decision function -> distillation."""
+        self.d1_models = {}
+        for seed in self.cfg.seeds:
+            model, val_auc = self.train_classifier(
+                self._synth_ds(self.filtered), np.array(self.filtered.label), seed,
+                weighted=False, tag="D1")
+            self.add_result("D1", 0, seed, self.evaluate_on_test(model, self.best_threshold_on_val(model)), val_auc)
+            self.d1_models[seed] = model
+        aucs = [r["test_auc"] for r in self.results if r["arm"] == "D1"]
+        print(f"\nD1 (synthetic-only) mean test AUC: {np.mean(aucs):.4f}  "
+              f"[C1 MSF ref {self.cfg.c1_auc}; real baselines ~0.94]")
+        print("Near C1/baseline => the synthetic set transmits MSF's decision function (distillation-like).")
+
+    def msf_test_predictions(self):
+        """MSF's own reverse-flow classification of the real test split (subprocess), cached to Drive."""
+        out_csv = self.cfg.save_dir / "msf_test_predictions.csv"
+        if out_csv.exists():
+            return pd.read_csv(out_csv)
+        cmd = [
+            "python", "project/classify_pneumoniamnist.py",
+            "--checkpoint", self.cfg.checkpoint_path, "--output_csv", str(out_csv),
+            "--dataset", "pneumoniamnist", "--n_classes", "2",
+            "--image_size", str(self.cfg.gen_image_size), "--beta", str(self.cfg.gen_beta),
+            "--rgb_mask", "--solver", "euler", "--step_size", str(self.cfg.gen_step_size),
+            "--model_channels", "64", "--num_res_blocks", "2",
+            "--channel_mult", "1", "2", "2", "2",
+            "--num_heads", "4", "--num_head_channels", "64", "--attention_resolutions", "2",
+        ]
+        env = dict(os.environ, PYTHONPATH=f"{self.cfg.medsymm_root}/src")
+        res = subprocess.run(cmd, cwd=self.cfg.medsymm_root, env=env, capture_output=True, text=True)
+        print(res.stdout.strip()[-800:])
+        if res.returncode != 0:
+            print(res.stderr[-2500:])
+            raise RuntimeError("MSF classification failed")
+        return pd.read_csv(out_csv)
+
+    def distillation_agreement(self):
+        """Fingerprint: does a synthetic-trained ResNet (D1) copy MSF's predictions --
+        especially MSF's *errors* -- more than a real-trained ResNet (B0)? Copying errors
+        needs copying the function, which mere data-manifold coverage cannot explain."""
+        msf = self.msf_test_predictions()
+        ty, msf_pred = msf["true"].values, msf["msf_pred"].values
+
+        real_model = self.baseline_models[(max(self.cfg.budgets), self.cfg.seeds[0])]
+        syn_model = self.d1_models[self.cfg.seeds[0]]
+        ry, rp = self.predict_probs(real_model, self.loader(self.test_set))
+        _, sp = self.predict_probs(syn_model, self.loader(self.test_set))
+        assert np.array_equal(ry, ty), "test order mismatch between MSF CSV and loader"
+        rp = (rp >= 0.5).astype(int)
+        sp = (sp >= 0.5).astype(int)
+
+        err = msf_pred != ty  # images MSF gets wrong
+        def agree(pred):
+            on_err = float((pred[err] == msf_pred[err]).mean()) if err.any() else np.nan
+            return round(float((pred == msf_pred).mean()), 3), round(on_err, 3)
+        r_all, r_err = agree(rp)
+        s_all, s_err = agree(sp)
+        print(f"MSF test accuracy: {(msf_pred == ty).mean():.3f}  (MSF errors: {int(err.sum())}/{len(ty)})")
+        print("Higher 'agree_on_MSF_errors' for the synthetic-trained model = distillation fingerprint.")
+        return pd.DataFrame([
+            {"model": "real-trained (B0)", "agree_with_MSF": r_all, "agree_on_MSF_errors": r_err},
+            {"model": "synthetic-trained (D1)", "agree_with_MSF": s_all, "agree_on_MSF_errors": s_err},
+        ])
+
     # ----------------------------------------------------- reference & summary
     def record_c1(self):
         for budget in self.cfg.budgets:
@@ -483,6 +550,8 @@ class Experiment:
 
         rows = []
         for b in means.index:
+            if means.loc[b, BASE].isna().all():   # e.g. D1's sentinel budget 0
+                continue
             best_base = means.loc[b, BASE].max()
             best_base_arm = means.loc[b, BASE].idxmax()
             for s in SYN:
@@ -513,6 +582,10 @@ class Experiment:
                             capsize=3, ls=ls, color=palette[arm], label=arm)
         ax.axhline(self.cfg.c1_auc, color="gray", ls="--", label=f"C1 MSF ({self.cfg.c1_auc})")
         ax.axhline(0.944, color="black", ls=":", label="B0 target (0.944)")
+        d1 = summary[summary.arm == "D1"]
+        if len(d1):
+            ax.axhline(d1.auc_mean.mean(), color="C6", ls="-.",
+                       label=f"D1 synth-only ({d1.auc_mean.mean():.3f})")
         ax.set_xlabel("real training images"); ax.set_ylabel("test AUC")
         ax.set_title("Gain vs data budget (baselines dashed, synthetic solid)")
         ax.legend(ncol=2, fontsize=8); ax.grid(alpha=0.3)
