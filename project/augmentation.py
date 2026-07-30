@@ -471,11 +471,15 @@ class Experiment:
                      .reset_index())
 
         BASE, SYN = ["B0", "B1", "B2"], ["S1", "S2", "S3"]
-        means = summary.pivot_table(index="budget", columns="arm", values="auc_mean")
-        cis = summary.pivot_table(index="budget", columns="arm", values="auc_ci")
+        # dropna=False keeps all-NaN CI columns (e.g. single-seed quick runs), so
+        # `means` and `cis` stay column-aligned.
+        means = summary.pivot_table(index="budget", columns="arm", values="auc_mean", dropna=False)
+        cis = summary.pivot_table(index="budget", columns="arm", values="auc_ci", dropna=False)
         for col in BASE + SYN + ["C1"]:
-            if col not in means:
-                means[col] = np.nan; cis[col] = np.nan
+            if col not in means.columns:
+                means[col] = np.nan
+            if col not in cis.columns:
+                cis[col] = np.nan
 
         rows = []
         for b in means.index:
