@@ -26,70 +26,11 @@ from sklearn.metrics import roc_auc_score, accuracy_score, balanced_accuracy_sco
 from scipy import stats
 from medmnist import PneumoniaMNIST
 
+# Dependency-light stats module, also runnable standalone against results.csv.
+from paired_stats import paired_tests_from_csv
+
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
-
-
-def paired_tests_from_csv(results_csv, alpha=0.05, baselines=("B0", "B1", "B2"),
-                          synthetic=("S1", "S2", "S3")):
-    """Paired per-seed test of each synthetic arm vs the strongest baseline, with
-    Benjamini-Hochberg correction across the sweep.
-
-    Reads a saved results.csv (one row per arm/budget/seed), so it needs **no
-    retraining** -- run it standalone in a fresh session:
-
-        from augmentation import paired_tests_from_csv
-        paired_tests_from_csv("/content/drive/MyDrive/MedSymmFlow_Project/results.csv")
-
-    Pairing by seed removes the shared subsample/init variance that makes the
-    independent-CI check over-conservative.
-    """
-    df = pd.read_csv(results_csv) if isinstance(results_csv, (str, Path)) else results_csv
-    BASE, SYN = list(baselines), list(synthetic)
-    rows = []
-    for budget, g in df[df["budget"] > 0].groupby("budget"):
-        wide = g.pivot_table(index="seed", columns="arm", values="test_auc")
-        avail = [b for b in BASE if b in wide.columns]
-        if not avail:
-            continue
-        best_base = wide[avail].mean().idxmax()
-        for s in SYN:
-            if s not in wide.columns:
-                continue
-            pair = wide[[s, best_base]].dropna()
-            if len(pair) < 2:
-                continue
-            a, b = pair[s].values, pair[best_base].values
-            d = a - b
-            t_p = float(stats.ttest_rel(a, b).pvalue)
-            try:
-                w_p = float(stats.wilcoxon(a, b).pvalue)
-            except ValueError:      # all differences zero / too few pairs
-                w_p = np.nan
-            dz = float(d.mean() / d.std(ddof=1)) if d.std(ddof=1) > 0 else np.nan
-            rows.append({"budget": budget, "arm": s, "vs": best_base,
-                         "n_seeds": len(pair), "mean_diff": round(float(d.mean()), 4),
-                         "wins": f"{int((d > 0).sum())}/{len(d)}",
-                         "cohen_dz": None if np.isnan(dz) else round(dz, 2),
-                         "paired_t_p": round(t_p, 4),
-                         "wilcoxon_p": None if np.isnan(w_p) else round(w_p, 4)})
-    out = pd.DataFrame(rows)
-    if out.empty:
-        print("No paired comparisons available (need >=2 seeds per arm).")
-        return out
-
-    # Benjamini-Hochberg step-up q-values over the whole family of tests.
-    p = out["paired_t_p"].values
-    m = len(p)
-    order = np.argsort(p)
-    q_sorted = np.minimum.accumulate((p[order] * m / np.arange(1, m + 1))[::-1])[::-1]
-    q = np.empty(m)
-    q[order] = np.clip(q_sorted, 0, 1)
-    out["q_value_BH"] = np.round(q, 4)
-    out["significant"] = (out["q_value_BH"] < alpha) & (out["mean_diff"] > 0)
-    print(f"Paired t-test vs strongest baseline, Benjamini-Hochberg at alpha={alpha} "
-          f"({m} comparisons). 'significant' requires a positive effect.")
-    return out.sort_values(["budget", "arm"]).reset_index(drop=True)
 
 
 class Config:
