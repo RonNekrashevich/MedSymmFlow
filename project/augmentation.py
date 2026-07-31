@@ -35,10 +35,13 @@ class Config:
 
     def __init__(self, quick=True, save_dir="/content/drive/MyDrive/MedSymmFlow_Project",
                  medsymm_root="/content/MedSymmFlow", image_size=28, gen_image_size=32,
-                 use_amp=True, budgets=None, seeds=None, epochs=None, syn_per_class=None):
+                 use_amp=True, budgets=None, seeds=None, epochs=None, syn_per_class=None,
+                 scratch_dir="/content", fig_dir=None):
         self.quick = quick
         self.save_dir = Path(save_dir)
         self.medsymm_root = medsymm_root
+        self.scratch_dir = scratch_dir        # ephemeral temp (Colab: /content; cluster: PVC)
+        self.fig_dir = fig_dir                # if set, figures are also saved here (headless batch)
         self.image_size = image_size          # classifier / real-data resolution
         self.gen_image_size = gen_image_size  # MSF RGB_28 checkpoint trains at 32
         self.use_amp = use_amp
@@ -98,8 +101,11 @@ class Experiment:
         self.synthetic_dir = c.save_dir / "synthetic_28"
         self.filtered_dir = c.save_dir / "synthetic_28_filtered"
         self.results_path = c.save_dir / "results.csv"
-        for d in (self.synthetic_dir, self.filtered_dir):
-            d.mkdir(parents=True, exist_ok=True)
+        self.scratch = Path(c.scratch_dir)
+        self.fig_dir = Path(c.fig_dir) if c.fig_dir else None
+        for d in (self.synthetic_dir, self.filtered_dir, self.scratch, self.fig_dir):
+            if d is not None:
+                d.mkdir(parents=True, exist_ok=True)
 
         self.train_tf = transforms.Compose([
             transforms.RandomHorizontalFlip(0.5),
@@ -137,6 +143,11 @@ class Experiment:
     def loader(self, ds, batch_size=64, shuffle=False, sampler=None):
         return DataLoader(ds, batch_size=batch_size, shuffle=(shuffle and sampler is None),
                           sampler=sampler, num_workers=2, pin_memory=True)
+
+    def _savefig(self, name):
+        # Persist the current figure to fig_dir for headless/batch runs (no-op interactively).
+        if self.fig_dir is not None:
+            plt.savefig(self.fig_dir / f"{name}.png", dpi=120, bbox_inches="tight")
 
     # -------------------------------------------------------------- data (G1)
     def setup_data(self):
@@ -313,7 +324,7 @@ class Experiment:
         rows, chunk_id = [], 0
         for start in range(0, per_class, c.gen_chunk):
             n = min(c.gen_chunk, per_class - start)
-            tmp = Path(f"/content/_gen_chunk_{chunk_id}")
+            tmp = self.scratch / f"_gen_chunk_{chunk_id}"
             if tmp.exists():
                 shutil.rmtree(tmp)
             cmd = [
@@ -363,7 +374,7 @@ class Experiment:
             paths = self.synthetic_meta[self.synthetic_meta.class_name == cls]["image_path"].tolist()[:per_class]
             for a, pth in zip(axes[r], paths):
                 a.imshow(Image.open(pth), cmap="gray"); a.set_title(cls, fontsize=8); a.axis("off")
-        plt.tight_layout(); plt.show()
+        plt.tight_layout(); self._savefig("synthetic_samples"); plt.show()
 
     # --------------------------------------------------------- filtering (Sec 7)
     def filter_synthetic(self, mem_quantile=0.015, conf_thresh=0.60):
@@ -378,7 +389,7 @@ class Experiment:
                 out.append(nn.functional.normalize(enc(x.to(self.device)), dim=1).cpu())
             return torch.cat(out)
 
-        real_dir = Path("/content/_real_train_png"); real_dir.mkdir(exist_ok=True)
+        real_dir = self.scratch / "_real_train_png"; real_dir.mkdir(parents=True, exist_ok=True)
         raw_train = PneumoniaMNIST(split="train", download=True, size=self.cfg.image_size)
         real_paths = []
         for i in range(len(raw_train)):
@@ -394,7 +405,8 @@ class Experiment:
         cut = np.quantile(nn_dist, mem_quantile)
         keep_mem = nn_dist > cut
         plt.hist(nn_dist, bins=40); plt.axvline(cut, color="r", ls="--")
-        plt.xlabel("nearest-real distance"); plt.ylabel("count"); plt.title("Memorisation screen"); plt.show()
+        plt.xlabel("nearest-real distance"); plt.ylabel("count"); plt.title("Memorisation screen")
+        self._savefig("memorisation_screen"); plt.show()
         print(f"Memorisation discard: {int((~keep_mem).sum())}/{len(keep_mem)} ({(~keep_mem).mean()*100:.1f}%)")
 
         scorer = self.baseline_models[(max(self.cfg.budgets), self.cfg.seeds[0])]
@@ -589,4 +601,4 @@ class Experiment:
         ax.set_xlabel("real training images"); ax.set_ylabel("test AUC")
         ax.set_title("Gain vs data budget (baselines dashed, synthetic solid)")
         ax.legend(ncol=2, fontsize=8); ax.grid(alpha=0.3)
-        plt.tight_layout(); plt.show()
+        plt.tight_layout(); self._savefig("gain_vs_budget"); plt.show()
