@@ -17,7 +17,8 @@ from scipy import stats
 
 
 def paired_tests_from_csv(results_csv, alpha=0.05, baselines=("B0", "B1", "B2"),
-                          synthetic=("S1", "S2", "S3")):
+                          synthetic=("S1", "S2", "S3"), select=None,
+                          on_duplicates="error"):
     """Paired per-seed test of each synthetic arm vs the strongest baseline, with
     Benjamini-Hochberg correction across the sweep.
 
@@ -28,6 +29,28 @@ def paired_tests_from_csv(results_csv, alpha=0.05, baselines=("B0", "B1", "B2"),
     (0.0625 at n=5), so the paired t-test is the operative statistic at 5 seeds.
     """
     df = pd.read_csv(results_csv) if isinstance(results_csv, (str, Path)) else results_csv
+    if select:
+        for col, val in select.items():
+            if col in df.columns:
+                df = df[df[col].fillna("").astype(str) == str(val)]
+
+    # A results.csv that accumulates across runs can hold the same (arm, budget, seed)
+    # under different filter configurations. pivot_table would silently average them and
+    # then t-test the average, so refuse by default.
+    key = [c for c in ("arm", "budget", "seed") if c in df.columns]
+    dup = df[df.duplicated(key, keep=False)] if key else df.iloc[:0]
+    if len(dup):
+        if on_duplicates == "error":
+            where = dup.groupby(key).size().head(10)
+            raise ValueError(
+                f"{len(dup)} duplicate (arm,budget,seed) rows -- these come from different "
+                f"runs/filter configs and must not be averaged.\n{where}\n"
+                "Pass select={'filter_key': ...} to disambiguate, or on_duplicates='last'.")
+        if on_duplicates == "last":
+            df = df.drop_duplicates(key, keep="last")
+        elif on_duplicates != "mean":
+            raise ValueError("on_duplicates must be 'error', 'last' or 'mean'")
+
     BASE, SYN = list(baselines), list(synthetic)
     rows = []
     for budget, g in df[df["budget"] > 0].groupby("budget"):
