@@ -901,29 +901,54 @@ class Experiment:
             aucs = self.ledger.query("arm == 'D1'")["test_auc"].tolist()
         print(f"\nD1 (synthetic-only) mean test AUC: {np.mean(aucs):.4f}  "
               f"[C1 MSF ref {self.cfg.c1_auc}; real baselines ~0.94]")
-        print("Near C1/baseline => the synthetic set transmits MSF's decision function (distillation-like).")
+        print("D1 near or above C1 means the synthetic set alone carries the class structure. "
+              "Whether that is DISTILLATION of MSF's decision function or plain coverage of "
+              "the data manifold is decided by the fingerprint in distillation_agreement(), "
+              "not by this number.")
 
     def msf_test_predictions(self):
         """MSF's own reverse-flow classification of the real test split (subprocess), cached to Drive."""
-        out_csv = self.cfg.save_dir / "msf_test_predictions.csv"
+        # Versioned filename: the old cache held only hard predictions, so a stale file
+        # would be reused forever and measure_c1() could never compute an AUC.
+        c = self.cfg
+        out_csv = (c.run_dir /
+                   f"msf_preds_pneumoniamnist_test_{c.gen_image_size}_beta{c.gen_beta}"
+                   f"_{c.gen_solver}{c.gen_step_size}.csv")
         if out_csv.exists():
             return pd.read_csv(out_csv)
+        # classify_medmnist.py also writes soft distance-to-class scores (msf_negdist_*),
+        # which is what makes a measured C1 AUC possible.
         cmd = [
-            "python", "project/classify_pneumoniamnist.py",
-            "--checkpoint", self.cfg.checkpoint_path, "--output_csv", str(out_csv),
+            "python", "project/classify_medmnist.py",
+            "--checkpoint", c.checkpoint_path, "--output_csv", str(out_csv),
             "--dataset", "pneumoniamnist", "--n_classes", "2",
-            "--image_size", str(self.cfg.gen_image_size), "--beta", str(self.cfg.gen_beta),
-            "--rgb_mask", "--solver", "euler", "--step_size", str(self.cfg.gen_step_size),
-            "--model_channels", "64", "--num_res_blocks", "2",
-            "--channel_mult", "1", "2", "2", "2",
-            "--num_heads", "4", "--num_head_channels", "64", "--attention_resolutions", "2",
+            "--image_size", str(c.gen_image_size), "--beta", str(c.gen_beta),
+            "--rgb_mask", "--solver", c.gen_solver, "--step_size", str(c.gen_step_size),
         ]
-        env = dict(os.environ, PYTHONPATH=f"{self.cfg.medsymm_root}/src")
-        res = subprocess.run(cmd, cwd=self.cfg.medsymm_root, env=env, capture_output=True, text=True)
+        env = dict(os.environ, PYTHONPATH=f"{c.medsymm_root}/src")
+        res = subprocess.run(cmd, cwd=c.medsymm_root, env=env, capture_output=True, text=True)
         print(res.stdout.strip()[-800:])
         if res.returncode != 0:
-            print(res.stderr[-2500:])
-            raise RuntimeError("MSF classification failed")
+            # Fall back to the legacy script: it yields no soft scores (so no measured C1
+            # AUC) but still produces the hard predictions the fingerprint needs.
+            print("classify_medmnist.py failed; falling back to classify_pneumoniamnist.py")
+            print(res.stderr[-1500:])
+            legacy = [
+                "python", "project/classify_pneumoniamnist.py",
+                "--checkpoint", c.checkpoint_path, "--output_csv", str(out_csv),
+                "--dataset", "pneumoniamnist", "--n_classes", "2",
+                "--image_size", str(c.gen_image_size), "--beta", str(c.gen_beta),
+                "--rgb_mask", "--solver", c.gen_solver, "--step_size", str(c.gen_step_size),
+                "--model_channels", "64", "--num_res_blocks", "2",
+                "--channel_mult", "1", "2", "2", "2",
+                "--num_heads", "4", "--num_head_channels", "64", "--attention_resolutions", "2",
+            ]
+            res = subprocess.run(legacy, cwd=c.medsymm_root, env=env,
+                                 capture_output=True, text=True)
+            print(res.stdout.strip()[-800:])
+            if res.returncode != 0:
+                print(res.stderr[-2500:])
+                raise RuntimeError("MSF classification failed")
         return pd.read_csv(out_csv)
 
     def distillation_agreement(self, budget=None, seed=None):
