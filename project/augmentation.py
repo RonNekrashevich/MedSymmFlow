@@ -45,7 +45,7 @@ class Config:
     def __init__(self, quick=True, save_dir="/content/drive/MyDrive/MedSymmFlow_Project",
                  medsymm_root="/content/MedSymmFlow", image_size=28, gen_image_size=32,
                  use_amp=True, budgets=None, seeds=None, epochs=None, syn_per_class=None,
-                 scratch_dir="/content", fig_dir=None, **overrides):
+                 scratch_dir="/content", fig_dir=None, weights_root=None, **overrides):
         self.quick = quick
         self.save_dir = Path(save_dir)
         self.medsymm_root = medsymm_root
@@ -54,8 +54,11 @@ class Config:
         self.image_size = image_size          # classifier / real-data resolution
         self.gen_image_size = gen_image_size  # MSF RGB_28 checkpoint trains at 32
         self.use_amp = use_amp
+        # Where the 755 MB Zenodo archive is downloaded and unpacked. On a cluster this
+        # must point at persistent storage, otherwise every job re-downloads it.
+        self.weights_root = str(weights_root) if weights_root else medsymm_root
         self.checkpoint_path = (
-            f"{medsymm_root}/models_extracted/models/SymmetricalFlowMatchingClass/"
+            f"{self.weights_root}/models_extracted/models/SymmetricalFlowMatchingClass/"
             "RGB_28/FM_pneumoniamnist_beta4.0_rgb.pt"
         )
         if quick:
@@ -542,8 +545,19 @@ class Experiment:
 
     # -------------------------------------------------------- generation (MSF)
     def download_weights(self):
-        root = self.cfg.medsymm_root
+        """Fetch and unpack the published MedSymmFlow weights, once.
+
+        Downloads into cfg.weights_root, which on a cluster should be persistent
+        storage -- otherwise each job pays the 755 MB download again. Safe to call
+        repeatedly; both steps are skipped if their output already exists.
+        """
+        root = self.cfg.weights_root
+        os.makedirs(root, exist_ok=True)
+        if os.path.exists(self.cfg.checkpoint_path):
+            print("Checkpoint already present:", self.cfg.checkpoint_path)
+            return
         if not os.path.exists(f"{root}/models.zip"):
+            print(f"downloading MedSymmFlow weights (~755 MB) -> {root}")
             subprocess.run(["wget", "-q", "-O", "models.zip",
                             "https://zenodo.org/records/16086025/files/models.zip?download=1"],
                            cwd=root, check=True)

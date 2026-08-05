@@ -31,6 +31,9 @@ LIGHT_DEPS = ["medmnist", "torchdiffeq", "diffusers", "accelerate", "zuko",
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="/storage/medsymm_out", help="output dir on the mounted volume")
+    ap.add_argument("--weights-root", default=None,
+                    help="persistent dir for the 755 MB MedSymmFlow weights (default: repo dir). "
+                         "Point this at the mounted volume so the download happens once.")
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2, 3, 4])
     ap.add_argument("--budgets", type=int, nargs="+", default=[250, 500, 1000])
     ap.add_argument("--quick", action="store_true", help="fast smoke test (overrides seeds/budgets)")
@@ -61,6 +64,7 @@ def main():
         quick=args.quick,
         save_dir=str(out),
         medsymm_root=str(REPO),
+        weights_root=args.weights_root,
         scratch_dir=str(out / "scratch"),
         fig_dir=str(out / "figures"),
         seeds=(None if args.quick else args.seeds),
