@@ -139,6 +139,42 @@ Audited: the only deletions anywhere in the project are `rmtree` on
 `<run>/scratch/_gen_chunk_N`, temporary directories the generation step creates itself.
 Nothing removes a path it did not create, and nothing writes outside `$DATA_ROOT`.
 
+## Building your own image (optional)
+
+The runtime `pip install` in the entrypoint is fine **when the compute nodes have outbound
+internet**. Build the image instead when they do not, or when you want jobs to start
+instantly.
+
+```bash
+docker build -f project/runai/Dockerfile -t <registry>/medsymm:1 .
+docker push <registry>/medsymm:1
+```
+
+Then swap the image in any submit command:
+
+```bash
+runai submit medsymm-full -i <registry>/medsymm:1 -g 1 ...
+```
+
+The repo is *not* baked into the image — the entrypoint still clones it — so a code change
+never requires a rebuild. Rebuild only when dependencies change.
+
+### OFFLINE clusters (no outbound internet on the nodes)
+
+Three things need internet and all three have an offline route:
+
+| Needs internet | Offline route |
+|---|---|
+| `pip install` | baked into the image (build it) |
+| `git clone` of this repo | bake it in too: add `COPY . /opt/medsymm` and set `REPO_DIR=/opt/medsymm` |
+| 755 MB Zenodo weights | download once on your laptop, copy `models.zip` into `$DATA_ROOT/weights/`; the entrypoint unpacks rather than downloads |
+
+Test whether the nodes have internet before assuming:
+
+```bash
+runai submit nettest -i ubuntu --command -- bash -c "curl -sSI -m 10 https://pypi.org | head -1 || echo NO_INTERNET"
+```
+
 ## Notes and gotchas
 
 - **Image.** `nvcr.io/nvidia/pytorch:24.12-py3` already contains CUDA PyTorch; the entrypoint
