@@ -5,7 +5,7 @@ Everything is parameterised by two variables, so you only edit them once:
 | Variable | What it is | Example |
 |---|---|---|
 | `PVC` | your Run:ai persistent volume claim | `my-lab-pvc` |
-| `DATA_ROOT` | path *inside the container* where that volume is mounted, plus a project folder | `/storage/medsymm` |
+| `DATA_ROOT` | **your own** folder inside the mounted volume — never the mount root | `/storage/ronne/medsymm` |
 
 ---
 
@@ -27,7 +27,7 @@ runai list projects
 kubectl get pvc            # if you have kubectl access
 ```
 
-Then set, for example, `PVC=my-lab-pvc` and `DATA_ROOT=/storage/medsymm`.
+Then set, for example, `PVC=my-lab-pvc` and `DATA_ROOT=/storage/ronne/medsymm`.
 
 ---
 
@@ -40,7 +40,7 @@ runai submit medsymm-smoke \
   -i nvcr.io/nvidia/pytorch:24.12-py3 \
   -g 1 \
   --pvc my-lab-pvc:/storage \
-  -e DATA_ROOT=/storage/medsymm \
+  -e DATA_ROOT=/storage/ronne/medsymm \
   -e RUN_NAME=smoke \
   --command -- bash -c \
   "git clone -q https://github.com/RonNekrashevich/MedSymmFlow.git /workspace/m && bash /workspace/m/project/runai/entrypoint.sh --quick"
@@ -65,7 +65,7 @@ runai submit medsymm-full \
   -i nvcr.io/nvidia/pytorch:24.12-py3 \
   -g 1 \
   --pvc my-lab-pvc:/storage \
-  -e DATA_ROOT=/storage/medsymm \
+  -e DATA_ROOT=/storage/ronne/medsymm \
   -e RUN_NAME=full-5seed \
   --command -- bash -c \
   "git clone -q https://github.com/RonNekrashevich/MedSymmFlow.git /workspace/m && bash /workspace/m/project/runai/entrypoint.sh --seeds 0 1 2 3 4 --budgets 250 500 1000 2000 4708"
@@ -88,7 +88,7 @@ for mode in keep_confident keep_uncertain random_match none; do
   runai submit "medsymm-filter-$mode" \
     -i nvcr.io/nvidia/pytorch:24.12-py3 -g 1 \
     --pvc my-lab-pvc:/storage \
-    -e DATA_ROOT=/storage/medsymm -e "RUN_NAME=filter-$mode" \
+    -e DATA_ROOT=/storage/ronne/medsymm -e "RUN_NAME=filter-$mode" \
     --command -- bash -c \
     "git clone -q https://github.com/RonNekrashevich/MedSymmFlow.git /workspace/m && bash /workspace/m/project/runai/entrypoint.sh --seeds 0 1 2 3 4 --budgets 500 --filter-mode $mode --run-tag filter=$mode"
 done
@@ -98,7 +98,7 @@ for b in 1 2 4 6; do
   runai submit "medsymm-beta$b" \
     -i nvcr.io/nvidia/pytorch:24.12-py3 -g 1 \
     --pvc my-lab-pvc:/storage \
-    -e DATA_ROOT=/storage/medsymm -e "RUN_NAME=beta-$b" \
+    -e DATA_ROOT=/storage/ronne/medsymm -e "RUN_NAME=beta-$b" \
     --command -- bash -c \
     "git clone -q https://github.com/RonNekrashevich/MedSymmFlow.git /workspace/m && bash /workspace/m/project/runai/entrypoint.sh --seeds 0 1 2 --budgets 500 --beta $b --run-tag beta=$b"
 done
@@ -115,7 +115,7 @@ Ledgers are plain CSV. Concatenate and analyse them anywhere, including on your 
 
 ```python
 import pandas as pd, glob
-df = pd.concat([pd.read_csv(f) for f in glob.glob("/storage/medsymm/runs/*/results.csv")])
+df = pd.concat([pd.read_csv(f) for f in glob.glob("/storage/ronne/medsymm/runs/*/results.csv")])
 df.to_csv("all_results.csv", index=False)
 
 import sys; sys.path.insert(0, "project")
@@ -128,6 +128,17 @@ averaging them, so pass `select=` to pick one configuration at a time.
 
 ---
 
+## Shared-volume safety
+
+The volume is shared with the rest of the lab, so the entrypoint refuses to start if
+`DATA_ROOT` is a mount root, is a mount point, or already contains files this project did
+not create — it prints the directory listing and exits rather than writing into somebody
+else's folder. Point it at an empty personal folder such as `/storage/$USER/medsymm`.
+
+Audited: the only deletions anywhere in the project are `rmtree` on
+`<run>/scratch/_gen_chunk_N`, temporary directories the generation step creates itself.
+Nothing removes a path it did not create, and nothing writes outside `$DATA_ROOT`.
+
 ## Notes and gotchas
 
 - **Image.** `nvcr.io/nvidia/pytorch:24.12-py3` already contains CUDA PyTorch; the entrypoint
@@ -138,6 +149,9 @@ averaging them, so pass `select=` to pick one configuration at a time.
 - **One GPU is enough.** Nothing here is distributed; parallelism comes from running many
   single-GPU jobs, not from multi-GPU jobs.
 - **Interactive debugging:** `runai submit -i nvcr.io/nvidia/pytorch:24.12-py3 -g 1 --interactive --attach --command -- bash`
+- **Connectivity.** The cluster API lives on a university-internal address, so you must be
+  on campus or connected to the VPN. Check with `curl -k -m 5 https://<api-host>:6443/version`
+  before debugging anything else; a timeout there means the network, not Run:ai.
 - **The weights download is the slowest first step.** If the cluster has no outbound internet,
   copy `models.zip` onto the volume manually into `$DATA_ROOT/weights/` and the entrypoint
   will unpack it instead of downloading.
