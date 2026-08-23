@@ -15,7 +15,6 @@ for candidate in [str(SRC_ROOT), str(MEDSYMMFLOW_ROOT)]:
         sys.path.insert(0, candidate)
 
 from medsymmflow.models.SymmFMClass import SymmFMClass
-from medsymmflow.data.Dataloaders import pick_dataset
 from medsymmflow.utils.util import parse_args_SymmetricFlowMatchingClass
 
 
@@ -92,7 +91,9 @@ def main() -> None:
     normal_dir.mkdir(parents=True, exist_ok=True)
     pneumonia_dir.mkdir(parents=True, exist_ok=True)
 
-    image_shape, channels, _ = pick_dataset(args.dataset, "val", args.image_size, 1, args.num_workers)
+    # pick_dataset only supplied these two constants here (its loader is unused for
+    # sampling) at the cost of downloading a whole 64px dataset -- inline them.
+    image_shape, channels = args.image_size, 1
 
     original_argv = sys.argv.copy()
     try:
