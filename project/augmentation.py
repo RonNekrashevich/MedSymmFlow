@@ -34,6 +34,8 @@ from medmnist import PneumoniaMNIST
 from paired_stats import paired_tests_from_csv
 # Deterministic filtering: pure-numpy keep-mask maths + cache keys (no torch).
 import filtering as flt
+# Shared generator/classifier disjoint split (also used by train_msf_scratch.py).
+from data_split import gen_clf_split, split_fingerprint
 
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
@@ -108,6 +110,16 @@ class Config:
         self.resume = True
         self.run_tag = ""
 
+        # ---- disjoint generator/classifier data. gen_frac=None keeps the published
+        # pretrained checkpoint and the full train pool (old behaviour). A fraction in
+        # (0,1) means: the MSF generator is trained FROM SCRATCH (train_msf_scratch.py)
+        # on that stratified share of the train split, and every classifier arm draws
+        # only from the complement -- generator and ResNet share no real image.
+        self.gen_frac = None
+        self.split_seed = 0
+        self.gen_epochs = 600      # keyed into the scratch checkpoint name, so a
+                                   # 20-epoch smoke never masquerades as the real generator
+
         # Any remaining keyword sets an attribute directly, so every knob above is
         # reachable as Config(..., filter_mode="keep_uncertain", gen_beta=1.0).
         for key, value in overrides.items():
@@ -120,6 +132,14 @@ class Config:
             self.filter_scorer = "full"
             self.filter_scorer_budget = max(self.budgets)
             self.mem_reference = "full"
+
+        # After overrides for the same reason: gen_frac/split_seed/gen_beta may all be
+        # overridden, and the scratch checkpoint is keyed by all three.
+        if self.gen_frac:
+            self.checkpoint_path = (
+                f"{self.weights_root}/scratch/FM_pneumoniamnist_scratch"
+                f"_g{self.gen_frac}_ss{self.split_seed}_e{self.gen_epochs}"
+                f"_beta{self.gen_beta}_rgb.pt")
 
     @property
     def run_dir(self) -> Path:
@@ -196,6 +216,8 @@ class Experiment:
         ])
         self.results = []
         self.baseline_models = {}
+        self.gen_idx = None           # generator-half indices (disjoint mode only)
+        self.clf_pool_idx = None      # classifier pool; None = whole train split
         self.synthetic_meta = None
         self.filtered = None          # scorer-free (mem-only) pool; S1 pretrains on this
         self._filter_cache = {}       # (budget, seed) -> filtered DataFrame
@@ -209,6 +231,9 @@ class Experiment:
         print("quick:", c.quick, "| budgets:", c.budgets, "| seeds:", c.seeds, "| epochs:", c.epochs)
         print(f"filter: mode={c.filter_mode} scorer={c.filter_scorer} mem={c.mem_reference}"
               + ("  [LEGACY - reproduces the old leaky semantics]" if c.legacy_filter else ""))
+        if c.gen_frac:
+            print(f"disjoint generator: gen_frac={c.gen_frac} split_seed={c.split_seed} "
+                  f"-> from-scratch checkpoint {Path(c.checkpoint_path).name}")
         if len(self.ledger):
             print(f"ledger: {len(self.ledger)} existing rows at {self.results_path}"
                   + ("  (resume ON)" if c.resume else "  (resume OFF - will re-run)"))
@@ -266,6 +291,7 @@ class Experiment:
                 "filter_mode": c.filter_mode, "filter_scorer": c.filter_scorer,
                 "filter_scorer_budget": c.filter_scorer_budget,
                 "n_syn_used": n_syn_used, "pool_hash": self._pool_hash or "",
+                "gen_frac": c.gen_frac or 0, "split_seed": (c.split_seed if c.gen_frac else ""),
                 "run_tag": c.run_tag, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
 
     # ------------------------------------------------------------ selftest (A1)
@@ -290,10 +316,14 @@ class Experiment:
         path = Path(fixtures_path or (self.cfg.run_dir / "fixtures_prerefactor.json"))
         self.set_seed(0)
         got = {"model_init_sha1_seed0": self._sha1_state_dict(self.build_model().state_dict())}
-        for n in (250, 500, 1000):
-            idx, _ = self.stratified_subset(n, 0)
-            got[f"subset_{n}_seed0_sha1"] = hashlib.sha1(
-                ",".join(str(int(i)) for i in idx).encode()).hexdigest()
+        if self.cfg.gen_frac:
+            print("selftest: subset fixtures skipped -- disjoint mode draws from the "
+                  "classifier pool, so subsets differ from the full-pool fixtures by design.")
+        else:
+            for n in (250, 500, 1000):
+                idx, _ = self.stratified_subset(n, 0)
+                got[f"subset_{n}_seed0_sha1"] = hashlib.sha1(
+                    ",".join(str(int(i)) for i in idx).encode()).hexdigest()
         flt._selftest()
 
         if not path.exists():
@@ -326,9 +356,27 @@ class Experiment:
         self.train_labels_all = np.array(self.train_set.labels).reshape(-1)
         print("Split sizes OK: train 4708 / val 524 / test 624")
 
+        if c.gen_frac:
+            self.gen_idx, self.clf_pool_idx = gen_clf_split(
+                self.train_labels_all, c.gen_frac, c.split_seed)
+            over = [b for b in c.budgets if b > len(self.clf_pool_idx)]
+            assert not over, (
+                f"budgets {over} exceed the classifier pool ({len(self.clf_pool_idx)}); "
+                f"the other {len(self.gen_idx)} train images belong to the generator")
+            print(f"Disjoint split (split_seed {c.split_seed}): "
+                  f"generator {len(self.gen_idx)} [{split_fingerprint(self.gen_idx)}] / "
+                  f"classifier pool {len(self.clf_pool_idx)} -- no shared images")
+
         rows = []
-        for name, ds in [("train", self.train_set), ("val", self.val_set), ("test", self.test_set)]:
-            y = np.array(ds.labels).reshape(-1)
+        parts = [("train", None), ("val", None), ("test", None)]
+        if c.gen_frac:
+            parts += [("train/generator", self.gen_idx), ("train/clf_pool", self.clf_pool_idx)]
+        for name, idx in parts:
+            if idx is None:
+                ds = {"train": self.train_set, "val": self.val_set, "test": self.test_set}[name]
+                y = np.array(ds.labels).reshape(-1)
+            else:
+                y = self.train_labels_all[np.asarray(idx)]
             n0, n1 = int((y == 0).sum()), int((y == 1).sum())
             rows.append({"split": name, "normal": n0, "pneumonia": n1,
                          "pneumonia_frac": round(n1 / (n0 + n1), 3)})
@@ -454,13 +502,23 @@ class Experiment:
         return model, best_auc
 
     def stratified_subset(self, n, seed):
-        if n >= len(self.train_set):
-            return list(range(len(self.train_set))), self.train_labels_all
+        """Stratified draw of n indices from the classifier pool.
+
+        The pool is the whole train split, or its classifier half in disjoint mode
+        (cfg.gen_frac). Indices are always into the full train_set. With the full
+        pool this is bit-identical to the pre-disjoint implementation (same rng
+        stream), so the recorded fixtures stay valid.
+        """
+        pool = (np.arange(len(self.train_set)) if self.clf_pool_idx is None
+                else np.asarray(self.clf_pool_idx))
+        pool_labels = self.train_labels_all[pool]
+        if n >= len(pool):
+            return pool.tolist(), pool_labels
         rng = np.random.default_rng(seed)
         idx = []
         for c in (0, 1):
-            c_idx = np.where(self.train_labels_all == c)[0]
-            take = int(round(n * (len(c_idx) / len(self.train_labels_all))))
+            c_idx = pool[pool_labels == c]
+            take = int(round(n * (len(c_idx) / len(pool))))
             idx.extend(rng.choice(c_idx, size=take, replace=False).tolist())
         idx = sorted(idx)
         return idx, self.train_labels_all[idx]
@@ -551,6 +609,24 @@ class Experiment:
         storage -- otherwise each job pays the 755 MB download again. Safe to call
         repeatedly; both steps are skipped if their output already exists.
         """
+        c = self.cfg
+        if c.gen_frac:
+            # Disjoint mode never touches the published weights: the checkpoint must
+            # come from train_msf_scratch.py (run_experiment.py trains it if missing).
+            assert os.path.exists(c.checkpoint_path), (
+                f"scratch generator checkpoint missing: {c.checkpoint_path}\n"
+                f"train it first:  python project/train_msf_scratch.py "
+                f"--out {c.checkpoint_path} --gen-frac {c.gen_frac} "
+                f"--split-seed {c.split_seed} --beta {c.gen_beta}")
+            sidecar = Path(c.checkpoint_path).with_suffix(".json")
+            if sidecar.exists():
+                m = json.loads(sidecar.read_text())
+                assert (m["gen_frac"], m["split_seed"]) == (c.gen_frac, c.split_seed), (
+                    f"checkpoint was trained with gen_frac={m['gen_frac']} "
+                    f"split_seed={m['split_seed']}, config wants "
+                    f"{c.gen_frac}/{c.split_seed}")
+            print("Scratch generator checkpoint present:", c.checkpoint_path)
+            return
         root = self.cfg.weights_root
         os.makedirs(root, exist_ok=True)
         if os.path.exists(self.cfg.checkpoint_path):
@@ -742,7 +818,11 @@ class Experiment:
                                       scorer_budget=c.filter_scorer_budget,
                                       scorer_seed=c.filter_scorer_seed)
         sb, ss = resolved if resolved else (None, None)
-        mem_b, mem_s = ((budget, seed) if c.mem_reference == "local" else (None, None))
+        if c.mem_reference == "local":
+            mem_b, mem_s = ((f"gen{c.gen_frac}", c.split_seed) if c.gen_frac
+                            else (budget, seed))
+        else:
+            mem_b, mem_s = (None, None)
         return flt.filter_manifest(
             self._scorer_manifest(sb, ss) if resolved else
             flt.scorer_manifest(dataset="pneumoniamnist", arch=c.arch, pool=self.pool_hash(),
@@ -772,7 +852,11 @@ class Experiment:
 
         ref = None
         if c.mem_reference == "local":
-            ref, _ = self.stratified_subset(budget, seed)
+            # What can be memorised is the GENERATOR's training data. In disjoint mode
+            # that is the fixed generator half (budget-independent, so nothing leaks
+            # across arms); otherwise the arm's own real subset, as before.
+            ref = (list(self.gen_idx) if self.gen_idx is not None
+                   else self.stratified_subset(budget, seed)[0])
         nn_dist = None if c.mem_reference == "none" else self._mem_distances(ref)
         probs = self._scorer_probs(*resolved) if resolved else None
         labels = np.array(self.synthetic_meta.label)

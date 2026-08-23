@@ -77,7 +77,45 @@ re-submitted with the same `RUN_NAME` and it continues where it stopped.
 
 ---
 
-## 3. Parallel sweeps — one job per configuration
+## 2b. Disjoint generator — train MSF from scratch, no shared data
+
+The published checkpoint saw the whole 4708-image train split, i.e. the same images
+the ResNet trains on. `--gen-frac` removes that confound: a stratified, seeded split
+(`data_split.py`, `split_seed` independent of `--seeds`) gives the generator its own
+half, MSF is trained **from scratch** on it (`train_msf_scratch.py`, same RGB_28
+architecture/beta), and every classifier arm — baselines, synthetic arms, filter
+scorers — draws only from the other half.
+
+With `--gen-frac 0.5` the classifier pool is 2354, so budgets must be ≤ 2354
+(the run refuses otherwise). Generator training (~600 epochs) runs once per
+`weights_root` and is cached as
+`weights/scratch/FM_pneumoniamnist_scratch_g0.5_ss0_beta4.0_rgb.pt` + a `.json`
+manifest recording the split.
+
+```bash
+# smoke first (~30 min: 20-epoch generator + quick pipeline)
+runai submit medsymm-disjoint-smoke \
+  -i nvcr.io/nvidia/pytorch:24.12-py3 -g 1 \
+  --pvc my-lab-pvc:/storage \
+  -e DATA_ROOT=/storage/ronne/medsymm -e RUN_NAME=disjoint-smoke \
+  --command -- bash -c \
+  "git clone -q https://github.com/RonNekrashevich/MedSymmFlow.git /workspace/m && bash /workspace/m/project/runai/entrypoint.sh --quick --gen-frac 0.5"
+
+# the real run (budgets capped at the 2354-image classifier pool)
+runai submit medsymm-disjoint \
+  -i nvcr.io/nvidia/pytorch:24.12-py3 -g 1 \
+  --pvc my-lab-pvc:/storage \
+  -e DATA_ROOT=/storage/ronne/medsymm -e RUN_NAME=disjoint-full \
+  --command -- bash -c \
+  "git clone -q https://github.com/RonNekrashevich/MedSymmFlow.git /workspace/m && bash /workspace/m/project/runai/entrypoint.sh --gen-frac 0.5 --seeds 0 1 2 3 4 --budgets 250 500 1000 2354 --run-tag disjoint"
+```
+
+The smoke run's generator (20 epochs) produces poor images — it only proves the
+plumbing. That's fine: the checkpoint filename is keyed by epoch count too
+(`..._e20_...` vs `..._e600_...`), so the smoke checkpoint is never mistaken for
+the real one. Keep disjoint and non-disjoint results in separate `RUN_NAME`s and
+compare via the `gen_frac` column the ledger now records.
+
 
 This is what the cluster is actually for. Each job writes to its own `RUN_NAME`, so they
 never collide; combine the ledgers afterwards.

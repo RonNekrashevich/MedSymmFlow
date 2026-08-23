@@ -44,6 +44,15 @@ def main():
     ap.add_argument("--conf-thresh", type=float, default=0.60)
     ap.add_argument("--mem-reference", default="local", choices=["none", "local", "full"])
     ap.add_argument("--beta", type=float, default=None, help="generation label-noise amplitude")
+    ap.add_argument("--gen-frac", type=float, default=None,
+                    help="train the MSF generator FROM SCRATCH on this stratified fraction "
+                         "of the train split; classifier arms use only the complement, so "
+                         "generator and ResNet share no real image")
+    ap.add_argument("--split-seed", type=int, default=0,
+                    help="seed of the generator/classifier split (independent of --seeds)")
+    ap.add_argument("--gen-epochs", type=int, default=None,
+                    help="generator training epochs (default 600, or 20 with --quick)")
+    ap.add_argument("--gen-batch-size", type=int, default=128)
     ap.add_argument("--run-tag", default="", help="label this run in the ledger")
     ap.add_argument("--legacy-filter", action="store_true",
                     help="reproduce the old (budget-dependent, leaky) filter semantics")
@@ -77,12 +86,25 @@ def main():
         resume=not args.no_resume,
         run_tag=args.run_tag,
         **({"gen_beta": args.beta} if args.beta is not None else {}),
+        **({"gen_frac": args.gen_frac, "split_seed": args.split_seed,
+            "gen_epochs": args.gen_epochs or (20 if args.quick else 600)}
+           if args.gen_frac else {}),
     )
     exp = Experiment(cfg)
 
     print("== data =="); print(exp.setup_data().to_string(index=False))
     print("== selftest =="); exp.selftest_repro(strict=False)   # needs train_set
     print("== baselines =="); exp.run_baselines()
+    if args.gen_frac and not Path(cfg.checkpoint_path).exists():
+        print("== generator training (from scratch, disjoint split) ==")
+        subprocess.run([sys.executable, str(HERE / "train_msf_scratch.py"),
+                        "--out", cfg.checkpoint_path,
+                        "--gen-frac", str(args.gen_frac),
+                        "--split-seed", str(args.split_seed),
+                        "--epochs", str(cfg.gen_epochs),
+                        "--batch-size", str(args.gen_batch_size),
+                        "--beta", str(cfg.gen_beta)],
+                       check=True, cwd=str(REPO))
     print("== generation =="); exp.download_weights(); exp.generate_synthetic(); exp.visualize_samples()
     print("== filtering =="); exp.filter_synthetic()
     print("== synthetic arms =="); exp.run_synthetic()
