@@ -38,7 +38,7 @@ Confirms the image, the volume, the weights download and the pipeline all work.
 ```bash
 runai submit medsymm-smoke \
   -i nvcr.io/nvidia/pytorch:24.12-py3 \
-  -g 1 \
+  -g 1 --large-shm \
   --pvc my-lab-pvc:/storage \
   -e DATA_ROOT=/storage/ronne/medsymm \
   -e RUN_NAME=smoke \
@@ -63,7 +63,7 @@ whole point of putting `--weights-root` on the volume.
 ```bash
 runai submit medsymm-full \
   -i nvcr.io/nvidia/pytorch:24.12-py3 \
-  -g 1 \
+  -g 1 --large-shm \
   --pvc my-lab-pvc:/storage \
   -e DATA_ROOT=/storage/ronne/medsymm \
   -e RUN_NAME=full-5seed \
@@ -95,7 +95,7 @@ manifest recording the split.
 ```bash
 # smoke first (~30 min: 20-epoch generator + quick pipeline)
 runai submit medsymm-disjoint-smoke \
-  -i nvcr.io/nvidia/pytorch:24.12-py3 -g 1 \
+  -i nvcr.io/nvidia/pytorch:24.12-py3 -g 1 --large-shm \
   --pvc my-lab-pvc:/storage \
   -e DATA_ROOT=/storage/ronne/medsymm -e RUN_NAME=disjoint-smoke \
   --command -- bash -c \
@@ -103,7 +103,7 @@ runai submit medsymm-disjoint-smoke \
 
 # the real run (budgets capped at the 2354-image classifier pool)
 runai submit medsymm-disjoint \
-  -i nvcr.io/nvidia/pytorch:24.12-py3 -g 1 \
+  -i nvcr.io/nvidia/pytorch:24.12-py3 -g 1 --large-shm \
   --pvc my-lab-pvc:/storage \
   -e DATA_ROOT=/storage/ronne/medsymm -e RUN_NAME=disjoint-full \
   --command -- bash -c \
@@ -137,7 +137,7 @@ keyed into the checkpoint cache:
 
 ```bash
 runai submit medsymm-disjoint-best \
-  -i nvcr.io/nvidia/pytorch:24.12-py3 -g 1 \
+  -i nvcr.io/nvidia/pytorch:24.12-py3 -g 1 --large-shm \
   --pvc my-lab-pvc:/storage \
   -e DATA_ROOT=/storage/ronne/medsymm -e RUN_NAME=disjoint-best \
   --command -- bash -c \
@@ -148,6 +148,9 @@ To find the best recipe, run 2-4 of these in parallel with different generator
 knobs and separate `RUN_NAME`s/`--run-tag`s, then compare **val** AUC of the
 synthetic arms across ledgers (never select the generator on test AUC).
 
+---
+
+## 3. Parallel sweeps — one job per configuration
 
 This is what the cluster is actually for. Each job writes to its own `RUN_NAME`, so they
 never collide; combine the ledgers afterwards.
@@ -156,7 +159,7 @@ never collide; combine the ledgers afterwards.
 # filter-direction ablation: is keeping CONFIDENT samples backwards?
 for mode in keep_confident keep_uncertain random_match none; do
   runai submit "medsymm-filter-$mode" \
-    -i nvcr.io/nvidia/pytorch:24.12-py3 -g 1 \
+    -i nvcr.io/nvidia/pytorch:24.12-py3 -g 1 --large-shm \
     --pvc my-lab-pvc:/storage \
     -e DATA_ROOT=/storage/ronne/medsymm -e "RUN_NAME=filter-$mode" \
     --command -- bash -c \
@@ -166,7 +169,7 @@ done
 # beta sweep: does sharper class conditioning help downstream?
 for b in 1 2 4 6; do
   runai submit "medsymm-beta$b" \
-    -i nvcr.io/nvidia/pytorch:24.12-py3 -g 1 \
+    -i nvcr.io/nvidia/pytorch:24.12-py3 -g 1 --large-shm \
     --pvc my-lab-pvc:/storage \
     -e DATA_ROOT=/storage/ronne/medsymm -e "RUN_NAME=beta-$b" \
     --command -- bash -c \
@@ -254,7 +257,7 @@ runai submit nettest -i ubuntu --command -- bash -c "curl -sSI -m 10 https://pyp
   `--existing-pvc claimname=my-lab-pvc,path=/storage`. Check `runai submit --help`.
 - **One GPU is enough.** Nothing here is distributed; parallelism comes from running many
   single-GPU jobs, not from multi-GPU jobs.
-- **Interactive debugging:** `runai submit -i nvcr.io/nvidia/pytorch:24.12-py3 -g 1 --interactive --attach --command -- bash`
+- **Interactive debugging:** `runai submit -i nvcr.io/nvidia/pytorch:24.12-py3 -g 1 --large-shm --interactive --attach --command -- bash`
 - **Connectivity.** The cluster API lives on a university-internal address, so you must be
   on campus or connected to the VPN. Check with `curl -k -m 5 https://<api-host>:6443/version`
   before debugging anything else; a timeout there means the network, not Run:ai.
