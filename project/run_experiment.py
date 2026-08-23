@@ -132,7 +132,15 @@ def main():
     print("== filtering =="); exp.filter_synthetic()
     print("== synthetic arms =="); exp.run_synthetic()
     print("== D1 diagnostic =="); exp.run_diagnostic_d1()
-    print("== C1 reference =="); exp.record_c1()
+    print("== C1 reference ==")
+    if args.gen_frac:
+        # The published C1 (0.952) came from a generator trained on ALL 4708 images
+        # for 1000 epochs -- not a valid reference for a scratch disjoint generator.
+        # Measure our generator's own reverse-flow classification and record that.
+        exp.measure_c1()
+        exp.record_c1(use_measured=True)
+    else:
+        exp.record_c1()
 
     print("== summary ==")
     summary, comparison = exp.summarize()
