@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Subset, WeightedRandomSampler
 from torchvision import transforms
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -56,6 +56,12 @@ def build_arg_parser():
     p.add_argument("--sample-freq", type=int, default=50)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--num-workers", type=int, default=2)
+    p.add_argument("--dropout", type=float, default=0.0)
+    p.add_argument("--balance-classes", action="store_true",
+                   help="50/50 weighted sampling of the generator half (normal is the "
+                        "26% minority), so both mask conditions train equally often")
+    p.add_argument("--init-checkpoint", type=str, default=None,
+                   help="warm-start weights, e.g. a pretrain_msf_chestmnist.py output")
     return p
 
 
@@ -83,8 +89,15 @@ def main():
           f"(normal {int((gen_labels == 0).sum())} / pneumonia {int((gen_labels == 1).sum())}), "
           f"classifier pool {len(clf_idx)} — held out from this training entirely")
 
+    sampler = None
+    if args.balance_classes:
+        class_w = 1.0 / np.bincount(gen_labels, minlength=2).clip(min=1)
+        sampler = WeightedRandomSampler(class_w[gen_labels], num_samples=len(gen_idx),
+                                        replacement=True)
+        print("class-balanced sampling ON (50/50 normal/pneumonia per epoch)")
     train_loader = DataLoader(Subset(full_train, gen_idx), batch_size=args.batch_size,
-                              shuffle=True, pin_memory=True, num_workers=args.num_workers)
+                              shuffle=(sampler is None), sampler=sampler,
+                              pin_memory=True, num_workers=args.num_workers)
     # Genuine val split, used only for the periodic sample visualisation during
     # training (the upstream repo used the TEST split here — kept out on purpose).
     val_set = PneumoniaMNIST(split="val", download=True, transform=tf)
@@ -118,8 +131,12 @@ def main():
     model_args.num_heads = 4
     model_args.num_head_channels = 64
     model_args.attention_resolutions = (2,)
+    model_args.dropout = args.dropout
 
     model = SymmFMClass(model_args, 32, 1)
+    if args.init_checkpoint:
+        model.load_checkpoint(args.init_checkpoint)
+        print("warm-started from", args.init_checkpoint)
     n_params = sum(p.numel() for p in model.model.parameters())
     print(f"training from scratch: {n_params/1e6:.1f}M params, {args.epochs} epochs, "
           f"{len(train_loader)} steps/epoch, batch {args.batch_size}")
@@ -143,6 +160,8 @@ def main():
         "n_gen": len(gen_idx), "n_clf_pool": len(clf_idx),
         "gen_idx_sha1": split_fingerprint(gen_idx),
         "epochs": args.epochs, "batch_size": args.batch_size, "lr": args.lr,
+        "dropout": args.dropout, "balance_classes": args.balance_classes,
+        "init_checkpoint": args.init_checkpoint or "",
         "beta": args.beta, "seed": args.seed, "source_snapshot": latest.name,
         "trained_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }

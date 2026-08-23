@@ -117,8 +117,14 @@ class Config:
         # only from the complement -- generator and ResNet share no real image.
         self.gen_frac = None
         self.split_seed = 0
-        self.gen_epochs = 600      # keyed into the scratch checkpoint name, so a
-                                   # 20-epoch smoke never masquerades as the real generator
+        # Generator-training knobs, all keyed into the scratch checkpoint name so
+        # different recipes never share a cached checkpoint (and a 20-epoch smoke
+        # never masquerades as the real generator).
+        self.gen_epochs = 600
+        self.gen_lr = 1e-3
+        self.gen_dropout = 0.0
+        self.gen_balance = False          # 50/50 sampling of the 26%-normal gen half
+        self.gen_pretrain_epochs = 0      # >0: ChestMNIST pretrain stage first
 
         # Any remaining keyword sets an attribute directly, so every knob above is
         # reachable as Config(..., filter_mode="keep_uncertain", gen_beta=1.0).
@@ -136,9 +142,14 @@ class Config:
         # After overrides for the same reason: gen_frac/split_seed/gen_beta may all be
         # overridden, and the scratch checkpoint is keyed by all three.
         if self.gen_frac:
+            self.pretrain_checkpoint_path = (
+                f"{self.weights_root}/scratch/pretrain_chestmnist"
+                f"_e{self.gen_pretrain_epochs}_beta{self.gen_beta}_rgb.pt")
             self.checkpoint_path = (
                 f"{self.weights_root}/scratch/FM_pneumoniamnist_scratch"
                 f"_g{self.gen_frac}_ss{self.split_seed}_e{self.gen_epochs}"
+                f"_lr{self.gen_lr}_do{self.gen_dropout}"
+                f"_bal{int(self.gen_balance)}_pre{self.gen_pretrain_epochs}"
                 f"_beta{self.gen_beta}_rgb.pt")
 
     @property

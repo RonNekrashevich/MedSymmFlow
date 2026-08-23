@@ -53,6 +53,14 @@ def main():
     ap.add_argument("--gen-epochs", type=int, default=None,
                     help="generator training epochs (default 600, or 20 with --quick)")
     ap.add_argument("--gen-batch-size", type=int, default=128)
+    ap.add_argument("--gen-lr", type=float, default=1e-3)
+    ap.add_argument("--gen-dropout", type=float, default=0.0)
+    ap.add_argument("--gen-balance", action="store_true",
+                    help="50/50 class sampling during generator training (the train "
+                         "data is 74% pneumonia)")
+    ap.add_argument("--gen-pretrain-epochs", type=int, default=0,
+                    help=">0: pretrain the generator on ChestMNIST (no-finding vs "
+                         "pneumonia, ~43k CXRs) before fine-tuning on the gen half")
     ap.add_argument("--run-tag", default="", help="label this run in the ledger")
     ap.add_argument("--legacy-filter", action="store_true",
                     help="reproduce the old (budget-dependent, leaky) filter semantics")
@@ -87,7 +95,10 @@ def main():
         run_tag=args.run_tag,
         **({"gen_beta": args.beta} if args.beta is not None else {}),
         **({"gen_frac": args.gen_frac, "split_seed": args.split_seed,
-            "gen_epochs": args.gen_epochs or (20 if args.quick else 600)}
+            "gen_epochs": args.gen_epochs or (20 if args.quick else 600),
+            "gen_lr": args.gen_lr, "gen_dropout": args.gen_dropout,
+            "gen_balance": args.gen_balance,
+            "gen_pretrain_epochs": args.gen_pretrain_epochs}
            if args.gen_frac else {}),
     )
     exp = Experiment(cfg)
@@ -96,6 +107,13 @@ def main():
     print("== selftest =="); exp.selftest_repro(strict=False)   # needs train_set
     print("== baselines =="); exp.run_baselines()
     if args.gen_frac and not Path(cfg.checkpoint_path).exists():
+        if cfg.gen_pretrain_epochs and not Path(cfg.pretrain_checkpoint_path).exists():
+            print("== generator pretraining (ChestMNIST) ==")
+            subprocess.run([sys.executable, str(HERE / "pretrain_msf_chestmnist.py"),
+                            "--out", cfg.pretrain_checkpoint_path,
+                            "--epochs", str(cfg.gen_pretrain_epochs),
+                            "--beta", str(cfg.gen_beta)],
+                           check=True, cwd=str(REPO))
         print("== generator training (from scratch, disjoint split) ==")
         subprocess.run([sys.executable, str(HERE / "train_msf_scratch.py"),
                         "--out", cfg.checkpoint_path,
@@ -103,7 +121,12 @@ def main():
                         "--split-seed", str(args.split_seed),
                         "--epochs", str(cfg.gen_epochs),
                         "--batch-size", str(args.gen_batch_size),
-                        "--beta", str(cfg.gen_beta)],
+                        "--lr", str(cfg.gen_lr),
+                        "--dropout", str(cfg.gen_dropout),
+                        "--beta", str(cfg.gen_beta),
+                        *(["--balance-classes"] if cfg.gen_balance else []),
+                        *(["--init-checkpoint", cfg.pretrain_checkpoint_path]
+                          if cfg.gen_pretrain_epochs else [])],
                        check=True, cwd=str(REPO))
     print("== generation =="); exp.download_weights(); exp.generate_synthetic(); exp.visualize_samples()
     print("== filtering =="); exp.filter_synthetic()

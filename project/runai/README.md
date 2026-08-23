@@ -111,10 +111,42 @@ runai submit medsymm-disjoint \
 ```
 
 The smoke run's generator (20 epochs) produces poor images — it only proves the
-plumbing. That's fine: the checkpoint filename is keyed by epoch count too
-(`..._e20_...` vs `..._e600_...`), so the smoke checkpoint is never mistaken for
-the real one. Keep disjoint and non-disjoint results in separate `RUN_NAME`s and
-compare via the `gen_frac` column the ledger now records.
+plumbing. That's fine: the checkpoint filename is keyed by the full training
+recipe (epochs, lr, dropout, balance, pretrain), so no two recipes ever share a
+cached checkpoint. Keep disjoint and non-disjoint results in separate `RUN_NAME`s
+and compare via the `gen_frac` column the ledger now records.
+
+### Squeezing the most out of 2354 images
+
+We are not bound to the paper's recipe (1000 epochs, lr 5e-4 on the FULL split) —
+with half the data the goal is the best generator we can get. Extra knobs, all
+keyed into the checkpoint cache:
+
+- `--gen-epochs 1500` — epochs are ~19 steps each, so long schedules are cheap.
+- `--gen-balance` — 50/50 class sampling; the data is 74% pneumonia, so the
+  normal-class mask conditioning otherwise trains on 4x fewer examples.
+- `--gen-dropout 0.1` — regularisation for the halved dataset (paper used 0.0
+  on the full one); also reduces memorisation, which the filter screens for.
+- `--gen-pretrain-epochs 60` — pretrain on ChestMNIST first (~43k NIH CXRs:
+  42k no-finding + 1k pneumonia-positive, other findings excluded), then
+  fine-tune on the pneumonia gen half. The pretrain checkpoint is cached once
+  per `weights_root` and shared by every recipe that requests it.
+  **Do not** instead mix ChestMNIST into the labeled training data: it is adult
+  imaging while PneumoniaMNIST is pediatric, and enriching one class with a
+  different domain teaches the model "adult film = that class".
+
+```bash
+runai submit medsymm-disjoint-best \
+  -i nvcr.io/nvidia/pytorch:24.12-py3 -g 1 \
+  --pvc my-lab-pvc:/storage \
+  -e DATA_ROOT=/storage/ronne/medsymm -e RUN_NAME=disjoint-best \
+  --command -- bash -c \
+  "git clone -q https://github.com/RonNekrashevich/MedSymmFlow.git /workspace/m && bash /workspace/m/project/runai/entrypoint.sh --gen-frac 0.5 --gen-epochs 1500 --gen-balance --gen-dropout 0.1 --gen-pretrain-epochs 60 --seeds 0 1 2 3 4 --budgets 250 500 1000 2354 --run-tag disjoint-best"
+```
+
+To find the best recipe, run 2-4 of these in parallel with different generator
+knobs and separate `RUN_NAME`s/`--run-tag`s, then compare **val** AUC of the
+synthetic arms across ledgers (never select the generator on test AUC).
 
 
 This is what the cluster is actually for. Each job writes to its own `RUN_NAME`, so they
