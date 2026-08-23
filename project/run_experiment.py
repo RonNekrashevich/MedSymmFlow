@@ -24,8 +24,8 @@ HERE = Path(__file__).resolve().parent          # .../MedSymmFlow/project
 REPO = HERE.parent                              # .../MedSymmFlow
 sys.path.insert(0, str(HERE))
 
-LIGHT_DEPS = ["medmnist", "torchdiffeq", "diffusers", "accelerate", "zuko",
-              "scikit-learn", "scipy", "loguru", "python-dotenv", "datasets"]
+LIGHT_DEPS = ["numpy<2", "medmnist", "torchdiffeq", "diffusers", "accelerate", "zuko",
+              "scikit-learn", "scipy", "loguru", "python-dotenv"]
 
 
 def main():

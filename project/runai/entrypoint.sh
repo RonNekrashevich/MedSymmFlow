@@ -66,9 +66,12 @@ fi
 echo "repo at $(git -C "$REPO_DIR" rev-parse --short HEAD)"
 
 # ---- deps: torch comes from the image, these do not ---------------------------
+# "numpy<2" is load-bearing: the NGC image's torch/torchvision are compiled against
+# NumPy 1.x, and without the pin the resolver upgrades to 2.x ("Numpy is not
+# available" crashes in every DataLoader).
 python -m pip install -q --no-input \
-  medmnist torchdiffeq diffusers accelerate zuko scikit-learn scipy \
-  loguru python-dotenv datasets
+  "numpy<2" medmnist torchdiffeq diffusers accelerate zuko scikit-learn scipy \
+  loguru python-dotenv
 
 # ---- run ----------------------------------------------------------------------
 cd "$REPO_DIR"
