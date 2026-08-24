@@ -1279,12 +1279,14 @@ class Experiment:
         res = self.current_selection() if select else self.ledger
         if not len(res):
             res = pd.DataFrame(self.results)
-        summary = (res.groupby(["arm", "budget"])
-                     .agg(auc_mean=("test_auc", "mean"),
-                          auc_ci=("test_auc", self._ci95),
-                          acc_mean=("test_acc", "mean"),
-                          n_seeds=("test_auc", "count"))
-                     .reset_index())
+        aggs = dict(auc_mean=("test_auc", "mean"),
+                    auc_ci=("test_auc", self._ci95),
+                    acc_mean=("test_acc", "mean"),
+                    n_seeds=("test_auc", "count"))
+        if "test_qwk" in res.columns:      # ordinal datasets (K>2) record QWK
+            aggs["qwk_mean"] = ("test_qwk", "mean")
+            aggs["qwk_ci"] = ("test_qwk", self._ci95)
+        summary = (res.groupby(["arm", "budget"]).agg(**aggs).reset_index())
 
         BASE, SYN = ["B0", "B1", "B2"], ["S1", "S2", "S3"]
         # dropna=False keeps all-NaN CI columns (e.g. single-seed quick runs), so
