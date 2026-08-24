@@ -17,6 +17,7 @@ set -euo pipefail
 : "${DATA_ROOT:?set DATA_ROOT to YOUR OWN folder, e.g. -e DATA_ROOT=/storage/ronne/medsymm}"
 REPO_URL="${REPO_URL:-https://github.com/RonNekrashevich/MedSymmFlow.git}"
 REPO_DIR="${REPO_DIR:-/workspace/MedSymmFlow}"
+REPO_REF="${REPO_REF:-main}"    # branch to run, e.g. -e REPO_REF=retina-port
 RUN_NAME="${RUN_NAME:-run}"
 
 # ---- shared-storage safety -----------------------------------------------------
@@ -59,11 +60,11 @@ export MPLBACKEND=Agg                   # headless matplotlib
 
 # ---- code: always current -----------------------------------------------------
 if [ -d "$REPO_DIR/.git" ]; then
-  git -C "$REPO_DIR" fetch -q --all && git -C "$REPO_DIR" reset -q --hard origin/main
+  git -C "$REPO_DIR" fetch -q --all && git -C "$REPO_DIR" reset -q --hard "origin/$REPO_REF"
 else
-  git clone -q "$REPO_URL" "$REPO_DIR"
+  git clone -q --branch "$REPO_REF" "$REPO_URL" "$REPO_DIR"
 fi
-echo "repo at $(git -C "$REPO_DIR" rev-parse --short HEAD)"
+echo "repo at $(git -C "$REPO_DIR" rev-parse --short HEAD) [$REPO_REF]"
 
 # ---- deps: torch comes from the image, these do not ---------------------------
 # "numpy<2" is load-bearing: the NGC image's torch/torchvision are compiled against
