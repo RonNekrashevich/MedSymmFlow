@@ -34,9 +34,10 @@ for candidate in [str(SRC_ROOT), str(MEDSYMMFLOW_ROOT)]:
         sys.path.insert(0, candidate)
 
 import numpy as np
-from medmnist import PneumoniaMNIST
+import medmnist
 
 from data_split import gen_clf_split, split_fingerprint
+from datasets_meta import dataset_meta
 from medsymmflow.models.SymmFMClass import SymmFMClass
 from medsymmflow.utils.util import parse_args_SymmetricFlowMatchingClass
 from config import models_dir
@@ -45,6 +46,7 @@ from config import models_dir
 def build_arg_parser():
     p = argparse.ArgumentParser(description="Train MSF from scratch on the generator half")
     p.add_argument("--out", type=str, required=True, help="final checkpoint destination (.pt)")
+    p.add_argument("--dataset", type=str, default="pneumoniamnist")
     p.add_argument("--gen-frac", type=float, default=0.5)
     p.add_argument("--split-seed", type=int, default=0)
     p.add_argument("--epochs", type=int, default=600)
@@ -73,34 +75,40 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
-    # Same preprocessing as the repo's pneumoniamnist loaders: 28px source, resize
-    # to 32, normalize to [-1, 1].
+    meta = dataset_meta(args.dataset)
+    ds_cls = getattr(medmnist, meta["medmnist_class"])
+    # Same preprocessing as the repo's MSF loaders: 28px source, resize to 32,
+    # normalize to [-1, 1]; retina additionally uses H+V flips like the repo.
+    aug = ([transforms.RandomHorizontalFlip(), transforms.RandomVerticalFlip()]
+           if meta["gen_flips"] else [])
     tf = transforms.Compose([
+        *aug,
         transforms.Resize(32),
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,)),
     ])
-    full_train = PneumoniaMNIST(split="train", download=True, transform=tf)
-    assert len(full_train) == 4708, len(full_train)
+    full_train = ds_cls(split="train", download=True, transform=tf)
+    assert len(full_train) == meta["splits"][0], len(full_train)
     labels = np.array(full_train.labels).reshape(-1)
     gen_idx, clf_idx = gen_clf_split(labels, args.gen_frac, args.split_seed)
     gen_labels = labels[gen_idx]
+    counts = np.bincount(gen_labels, minlength=meta["n_classes"]).tolist()
     print(f"disjoint split (seed {args.split_seed}): generator {len(gen_idx)} "
-          f"(normal {int((gen_labels == 0).sum())} / pneumonia {int((gen_labels == 1).sum())}), "
-          f"classifier pool {len(clf_idx)} — held out from this training entirely")
+          f"(per class {counts}), classifier pool {len(clf_idx)} — "
+          f"held out from this training entirely")
 
     sampler = None
     if args.balance_classes:
-        class_w = 1.0 / np.bincount(gen_labels, minlength=2).clip(min=1)
+        class_w = 1.0 / np.bincount(gen_labels, minlength=meta["n_classes"]).clip(min=1)
         sampler = WeightedRandomSampler(class_w[gen_labels], num_samples=len(gen_idx),
                                         replacement=True)
-        print("class-balanced sampling ON (50/50 normal/pneumonia per epoch)")
+        print(f"class-balanced sampling ON (uniform over {meta['n_classes']} classes per epoch)")
     train_loader = DataLoader(Subset(full_train, gen_idx), batch_size=args.batch_size,
                               shuffle=(sampler is None), sampler=sampler,
                               pin_memory=True, num_workers=args.num_workers)
     # Genuine val split, used only for the periodic sample visualisation during
     # training (the upstream repo used the TEST split here — kept out on purpose).
-    val_set = PneumoniaMNIST(split="val", download=True, transform=tf)
+    val_set = ds_cls(split="val", download=True, transform=tf)
     val_loader = DataLoader(val_set, batch_size=16, shuffle=True, pin_memory=True)
 
     original_argv = sys.argv.copy()
@@ -110,8 +118,8 @@ def main():
     finally:
         sys.argv = original_argv
     model_args.train = True
-    model_args.dataset = "pneumoniamnist"
-    model_args.n_classes = 2
+    model_args.dataset = args.dataset
+    model_args.n_classes = meta["n_classes"]
     model_args.batch_size = args.batch_size
     model_args.n_epochs = args.epochs
     model_args.lr = args.lr
@@ -133,7 +141,7 @@ def main():
     model_args.attention_resolutions = (2,)
     model_args.dropout = args.dropout
 
-    model = SymmFMClass(model_args, 32, 1)
+    model = SymmFMClass(model_args, 32, meta["channels"])
     if args.init_checkpoint:
         model.load_checkpoint(args.init_checkpoint)
         print("warm-started from", args.init_checkpoint)
@@ -147,7 +155,7 @@ def main():
     # train_model saved EMA snapshots under models_dir; pick the newest one this run
     # produced (mtime >= start guards against stale files from earlier runs).
     snap_dir = Path(models_dir) / "SymmetricalFlowMatchingClass"
-    pattern = f"FM_pneumoniamnist_beta{args.beta}_rgb_epoch*.pt"
+    pattern = f"FM_{args.dataset}_beta{args.beta}_rgb_epoch*.pt"
     snaps = [p for p in snap_dir.glob(pattern) if p.stat().st_mtime >= start - 60]
     assert snaps, f"no fresh snapshot matching {pattern} in {snap_dir}"
     latest = max(snaps, key=lambda p: int(p.stem.split("epoch")[1]))
@@ -156,6 +164,7 @@ def main():
     out.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(latest, out)
     manifest = {
+        "dataset": args.dataset,
         "gen_frac": args.gen_frac, "split_seed": args.split_seed,
         "n_gen": len(gen_idx), "n_clf_pool": len(clf_idx),
         "gen_idx_sha1": split_fingerprint(gen_idx),

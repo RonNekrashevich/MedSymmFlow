@@ -30,6 +30,8 @@ LIGHT_DEPS = ["numpy<2", "medmnist", "torchdiffeq", "diffusers", "accelerate", "
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--dataset", default="pneumoniamnist",
+                    choices=["pneumoniamnist", "retinamnist", "dermamnist"])
     ap.add_argument("--out", default="/storage/medsymm_out", help="output dir on the mounted volume")
     ap.add_argument("--weights-root", default=None,
                     help="persistent dir for the 755 MB MedSymmFlow weights (default: repo dir). "
@@ -77,8 +79,13 @@ def main():
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    if args.gen_pretrain_epochs and args.dataset != "pneumoniamnist":
+        ap.error("--gen-pretrain-epochs is only wired for pneumoniamnist "
+                 "(ChestMNIST pretraining; the ablation showed it does not help anyway)")
+
     cfg = Config(
         quick=args.quick,
+        dataset=args.dataset,
         save_dir=str(out),
         medsymm_root=str(REPO),
         weights_root=args.weights_root,
@@ -117,6 +124,7 @@ def main():
         print("== generator training (from scratch, disjoint split) ==")
         subprocess.run([sys.executable, str(HERE / "train_msf_scratch.py"),
                         "--out", cfg.checkpoint_path,
+                        "--dataset", args.dataset,
                         "--gen-frac", str(args.gen_frac),
                         "--split-seed", str(args.split_seed),
                         "--epochs", str(cfg.gen_epochs),

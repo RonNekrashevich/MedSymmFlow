@@ -28,6 +28,8 @@ from torchvision import transforms
 from torchvision.models import resnet18, ResNet18_Weights
 from sklearn.metrics import roc_auc_score, accuracy_score, balanced_accuracy_score, f1_score
 from scipy import stats
+from sklearn.metrics import cohen_kappa_score
+import medmnist
 from medmnist import PneumoniaMNIST
 
 # Dependency-light stats module, also runnable standalone against results.csv.
@@ -36,6 +38,7 @@ from paired_stats import paired_tests_from_csv
 import filtering as flt
 # Shared generator/classifier disjoint split (also used by train_msf_scratch.py).
 from data_split import gen_clf_split, split_fingerprint
+from datasets_meta import dataset_meta
 
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
@@ -47,8 +50,13 @@ class Config:
     def __init__(self, quick=True, save_dir="/content/drive/MyDrive/MedSymmFlow_Project",
                  medsymm_root="/content/MedSymmFlow", image_size=28, gen_image_size=32,
                  use_amp=True, budgets=None, seeds=None, epochs=None, syn_per_class=None,
-                 scratch_dir="/content", fig_dir=None, weights_root=None, **overrides):
+                 scratch_dir="/content", fig_dir=None, weights_root=None,
+                 dataset="pneumoniamnist", **overrides):
         self.quick = quick
+        self.dataset = dataset
+        meta = dataset_meta(dataset)
+        self.channels = meta["channels"]
+        self.class_names = list(meta["class_names"])
         self.save_dir = Path(save_dir)
         self.medsymm_root = medsymm_root
         self.scratch_dir = scratch_dir        # ephemeral temp (Colab: /content; cluster: PVC)
@@ -61,7 +69,7 @@ class Config:
         self.weights_root = str(weights_root) if weights_root else medsymm_root
         self.checkpoint_path = (
             f"{self.weights_root}/models_extracted/models/SymmetricalFlowMatchingClass/"
-            "RGB_28/FM_pneumoniamnist_beta4.0_rgb.pt"
+            f"RGB_28/FM_{dataset}_beta4.0_rgb.pt"
         )
         if quick:
             self.budgets, self.seeds, self.epochs, self.syn_per_class = [500], [0], 5, 200
@@ -76,7 +84,8 @@ class Config:
         self.gen_step_size = 0.04  # euler, ~25 steps
         self.gen_solver = "euler"
         self.gen_chunk = 200       # images per class per subprocess call (reduce if OOM)
-        self.c1_auc, self.c1_acc = 0.952, 0.880  # published MSF (28px) test reference
+        # published MSF (28px) test reference for this dataset (paper Table 2)
+        self.c1_auc, self.c1_acc = meta["c1_auc"], meta["c1_acc"]
 
         # ---- training knobs (were hardcoded; needed for arch/resolution sweeps later)
         self.arch = "resnet18"
@@ -84,7 +93,7 @@ class Config:
         self.batch_size = 64
         self.lr = 1e-4
         self.lr_finetune = 1e-5    # S1's fine-tune stage (was a literal 1e-5)
-        self.n_classes = 2
+        self.n_classes = meta["n_classes"]
 
         # ---- filtering (see filtering.py). Defaults are the scientifically defensible
         # ones: the filter may only use labels the hypothetical institution owns, so no
@@ -146,7 +155,7 @@ class Config:
                 f"{self.weights_root}/scratch/pretrain_chestmnist"
                 f"_e{self.gen_pretrain_epochs}_beta{self.gen_beta}_rgb.pt")
             self.checkpoint_path = (
-                f"{self.weights_root}/scratch/FM_pneumoniamnist_scratch"
+                f"{self.weights_root}/scratch/FM_{self.dataset}_scratch"
                 f"_g{self.gen_frac}_ss{self.split_seed}_e{self.gen_epochs}"
                 f"_lr{self.gen_lr}_do{self.gen_dropout}"
                 f"_bal{int(self.gen_balance)}_pre{self.gen_pretrain_epochs}"
@@ -160,14 +169,14 @@ class Config:
 
 
 class PathDataset(Dataset):
-    def __init__(self, paths, labels, tf):
-        self.paths, self.labels, self.tf = list(paths), list(labels), tf
+    def __init__(self, paths, labels, tf, mode="L"):
+        self.paths, self.labels, self.tf, self.mode = list(paths), list(labels), tf, mode
 
     def __len__(self):
         return len(self.paths)
 
     def __getitem__(self, i):
-        return self.tf(Image.open(self.paths[i]).convert("L")), self.labels[i]
+        return self.tf(Image.open(self.paths[i]).convert(self.mode)), self.labels[i]
 
 
 class IntLabel(Dataset):
@@ -188,9 +197,11 @@ class IntLabel(Dataset):
 class Experiment:
     def __init__(self, cfg=None, **kw):
         self.cfg = cfg or Config(**kw)
-        assert torch.cuda.is_available(), \
-            "Enable a GPU runtime: Runtime > Change runtime type > T4 GPU"
-        self.device = torch.device("cuda")
+        assert torch.cuda.is_available() or os.environ.get("MSF_ALLOW_CPU"), \
+            "Enable a GPU runtime (or set MSF_ALLOW_CPU=1 for local smoke tests)"
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if self.device.type == "cpu":
+            self.cfg.use_amp = False
         c = self.cfg
         c.save_dir.mkdir(parents=True, exist_ok=True)
         self.synthetic_dir = c.run_dir / "synthetic_28"
@@ -206,21 +217,25 @@ class Experiment:
             if d is not None:
                 d.mkdir(parents=True, exist_ok=True)
 
+        # Grayscale(3) lifts 1-channel datasets to the ResNet's 3 channels and is a
+        # no-op-shaped identity risk for RGB ones, so it is inserted only when needed.
+        to3 = ([transforms.Grayscale(num_output_channels=3)] if c.channels == 1 else [])
+        self.img_mode = "L" if c.channels == 1 else "RGB"   # for PathDataset/PNGs
         self.train_tf = transforms.Compose([
             transforms.RandomHorizontalFlip(0.5),
             transforms.RandomRotation(10),
             transforms.RandomResizedCrop(c.image_size, scale=(0.8, 1.0)),
-            transforms.Grayscale(num_output_channels=3),
+            *to3,
             transforms.ToTensor(),
             transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
         ])
         self.eval_tf = transforms.Compose([
-            transforms.Grayscale(num_output_channels=3),
+            *to3,
             transforms.ToTensor(),
             transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
         ])
         self.embed_tf = transforms.Compose([
-            transforms.Grayscale(num_output_channels=3),
+            *to3,
             transforms.Resize((224, 224)),
             transforms.ToTensor(),
             transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
@@ -238,7 +253,8 @@ class Experiment:
         # Resume: the ledger is the source of truth, so a dead Colab session costs at
         # most the cell that was running.
         self.ledger = self._load_ledger()
-        print("PyTorch:", torch.__version__, "| GPU:", torch.cuda.get_device_name(0))
+        print("PyTorch:", torch.__version__, "| device:",
+              torch.cuda.get_device_name(0) if self.device.type == "cuda" else "CPU (smoke)")
         print("quick:", c.quick, "| budgets:", c.budgets, "| seeds:", c.seeds, "| epochs:", c.epochs)
         print(f"filter: mode={c.filter_mode} scorer={c.filter_scorer} mem={c.mem_reference}"
               + ("  [LEGACY - reproduces the old leaky semantics]" if c.legacy_filter else ""))
@@ -285,7 +301,7 @@ class Experiment:
     def already_done(self, arm, budget, seed, filter_key=None):
         if not self.cfg.resume or not len(self.ledger):
             return False
-        key = {"dataset": "pneumoniamnist", "arch": self.cfg.arch, "arm": arm,
+        key = {"dataset": self.cfg.dataset, "arch": self.cfg.arch, "arm": arm,
                "budget": budget, "seed": seed,
                "filter_key": filter_key if filter_key is not None else "",
                "run_tag": self.cfg.run_tag}
@@ -298,7 +314,7 @@ class Experiment:
 
     def _provenance(self, filter_key="", n_syn_used=0):
         c = self.cfg
-        return {"dataset": "pneumoniamnist", "arch": c.arch, "filter_key": filter_key,
+        return {"dataset": c.dataset, "arch": c.arch, "filter_key": filter_key,
                 "filter_mode": c.filter_mode, "filter_scorer": c.filter_scorer,
                 "filter_scorer_budget": c.filter_scorer_budget,
                 "n_syn_used": n_syn_used, "pool_hash": self._pool_hash or "",
@@ -358,14 +374,17 @@ class Experiment:
     # -------------------------------------------------------------- data (G1)
     def setup_data(self):
         c = self.cfg
-        self.train_set = PneumoniaMNIST(split="train", transform=self.train_tf, download=True, size=c.image_size)
-        self.val_set = PneumoniaMNIST(split="val", transform=self.eval_tf, download=True, size=c.image_size)
-        self.test_set = PneumoniaMNIST(split="test", transform=self.eval_tf, download=True, size=c.image_size)
-        assert len(self.train_set) == 4708, len(self.train_set)
-        assert len(self.val_set) == 524, len(self.val_set)
-        assert len(self.test_set) == 624, len(self.test_set)
+        meta = dataset_meta(c.dataset)
+        ds_cls = getattr(medmnist, meta["medmnist_class"])
+        self.train_set = ds_cls(split="train", transform=self.train_tf, download=True, size=c.image_size)
+        self.val_set = ds_cls(split="val", transform=self.eval_tf, download=True, size=c.image_size)
+        self.test_set = ds_cls(split="test", transform=self.eval_tf, download=True, size=c.image_size)
+        n_tr, n_va, n_te = meta["splits"]
+        assert len(self.train_set) == n_tr, len(self.train_set)
+        assert len(self.val_set) == n_va, len(self.val_set)
+        assert len(self.test_set) == n_te, len(self.test_set)
         self.train_labels_all = np.array(self.train_set.labels).reshape(-1)
-        print("Split sizes OK: train 4708 / val 524 / test 624")
+        print(f"Split sizes OK: train {n_tr} / val {n_va} / test {n_te}")
 
         if c.gen_frac:
             self.gen_idx, self.clf_pool_idx = gen_clf_split(
@@ -388,9 +407,12 @@ class Experiment:
                 y = np.array(ds.labels).reshape(-1)
             else:
                 y = self.train_labels_all[np.asarray(idx)]
-            n0, n1 = int((y == 0).sum()), int((y == 1).sum())
-            rows.append({"split": name, "normal": n0, "pneumonia": n1,
-                         "pneumonia_frac": round(n1 / (n0 + n1), 3)})
+            counts = np.bincount(y, minlength=c.n_classes)
+            row = {"split": name}
+            row.update({c.class_names[k]: int(counts[k]) for k in range(c.n_classes)})
+            if c.n_classes == 2:
+                row["pneumonia_frac"] = round(counts[1] / counts.sum(), 3)
+            rows.append(row)
         return pd.DataFrame(rows)
 
     # ------------------------------------------------------- model & training
@@ -466,25 +488,47 @@ class Experiment:
             ys.append(labels.reshape(-1).long().numpy())
         return np.concatenate(ys), np.concatenate(ps, axis=0)
 
+    def _val_auc(self, model):
+        """Val-set AUC: binary uses the positive-prob path (bit-compatible with the
+        pre-port code); K classes use macro one-vs-rest on the full matrix."""
+        if self.cfg.n_classes == 2:
+            y, p = self.predict_probs(model, self.loader(self.val_set))
+            return roc_auc_score(y, p)
+        y, p = self.predict_proba(model, self.loader(self.val_set))
+        return roc_auc_score(y, p, multi_class="ovr", average="macro")
+
     def best_threshold_on_val(self, model):
+        if self.cfg.n_classes != 2:
+            return None                     # multi-class predicts by argmax
         y, p = self.predict_probs(model, self.loader(self.val_set))
         ts = np.linspace(0.05, 0.95, 19)
         j = [balanced_accuracy_score(y, (p >= t).astype(int)) for t in ts]
         return float(ts[int(np.argmax(j))])
 
     def evaluate_on_test(self, model, threshold):
-        y, p = self.predict_probs(model, self.loader(self.test_set))
-        pred = (p >= threshold).astype(int)
+        if self.cfg.n_classes == 2:
+            y, p = self.predict_probs(model, self.loader(self.test_set))
+            pred = (p >= threshold).astype(int)
+            return {
+                "test_auc": roc_auc_score(y, p),
+                "test_acc": accuracy_score(y, pred),
+                "test_balacc": balanced_accuracy_score(y, pred),
+                "test_f1": f1_score(y, pred),
+            }
+        y, p = self.predict_proba(model, self.loader(self.test_set))
+        pred = p.argmax(1)
         return {
-            "test_auc": roc_auc_score(y, p),
+            "test_auc": roc_auc_score(y, p, multi_class="ovr", average="macro"),
             "test_acc": accuracy_score(y, pred),
             "test_balacc": balanced_accuracy_score(y, pred),
-            "test_f1": f1_score(y, pred),
+            "test_f1": f1_score(y, pred, average="macro"),
+            "test_qwk": cohen_kappa_score(y, pred, weights="quadratic"),
         }
 
     def class_weights_for(self, subset_labels):
-        counts = np.bincount(subset_labels, minlength=2)
-        w = counts.sum() / (2.0 * np.maximum(counts, 1))
+        k = self.cfg.n_classes
+        counts = np.bincount(subset_labels, minlength=k)
+        w = counts.sum() / (float(k) * np.maximum(counts, 1))
         return torch.tensor(w, dtype=torch.float32, device=self.device)
 
     def train_classifier(self, train_ds, train_labels, seed, epochs=None, lr=None,
@@ -503,8 +547,7 @@ class Experiment:
         best_auc, best_state = -1.0, None
         for _ in range(epochs):
             self.run_epoch(model, loader, criterion, optimizer, scaler)
-            vy, vp = self.predict_probs(model, self.loader(self.val_set))
-            val_auc = roc_auc_score(vy, vp)
+            val_auc = self._val_auc(model)
             if val_auc > best_auc:
                 best_auc = val_auc
                 best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
@@ -527,7 +570,7 @@ class Experiment:
             return pool.tolist(), pool_labels
         rng = np.random.default_rng(seed)
         idx = []
-        for c in (0, 1):
+        for c in range(self.cfg.n_classes):   # (0, 1) for binary: identical rng stream
             c_idx = pool[pool_labels == c]
             take = int(round(n * (len(c_idx) / len(pool))))
             idx.extend(rng.choice(c_idx, size=take, replace=False).tolist())
@@ -587,7 +630,7 @@ class Experiment:
         self.baseline_models[(budget, seed)] = model
 
     def oversampler(self, sub_labels):
-        class_w = 1.0 / np.bincount(sub_labels, minlength=2).clip(min=1)
+        class_w = 1.0 / np.bincount(sub_labels, minlength=self.cfg.n_classes).clip(min=1)
         return WeightedRandomSampler(class_w[sub_labels], num_samples=len(sub_labels), replacement=True)
 
     # ---------------------------------------------------------- baselines (3)
@@ -610,7 +653,8 @@ class Experiment:
                         print(f"  [skip] {arm} n={budget} seed={seed} (in ledger)")
                         continue
                     self.run_supervised(arm, sub, sub_labels, budget, seed, **kw)
-        print("\nB0 reproduction target (protocol): ResNet-18 @28px AUC ~= 94.4")
+        if self.cfg.dataset == "pneumoniamnist":
+            print("\nB0 reproduction target (protocol): ResNet-18 @28px AUC ~= 94.4")
 
     # -------------------------------------------------------- generation (MSF)
     def download_weights(self):
@@ -659,10 +703,35 @@ class Experiment:
         meta_path = out_dir / "metadata.csv"
         if meta_path.exists():
             existing = pd.read_csv(meta_path)
-            if (existing["label"] == 0).sum() >= per_class and (existing["label"] == 1).sum() >= per_class:
+            if all((existing["label"] == k).sum() >= per_class for k in range(c.n_classes)):
                 print("Synthetic set already present:", len(existing), "images")
                 self.synthetic_meta = existing
                 return existing
+
+        if c.dataset != "pneumoniamnist":
+            # Generic path: generate_medmnist.py handles any class count, batches
+            # internally, stores at image_size, infers the UNet from the checkpoint,
+            # and writes a metadata.csv in exactly the schema used below.
+            cmd = ["python", "project/generate_medmnist.py",
+                   "--checkpoint", c.checkpoint_path,
+                   "--dataset", c.dataset, "--n_classes", str(c.n_classes),
+                   "--per_class", str(per_class), "--seed", str(base_seed),
+                   "--beta", str(c.gen_beta), "--image_size", str(c.gen_image_size),
+                   "--store_size", str(c.image_size), "--batch", str(c.gen_chunk),
+                   "--rgb_mask", "--solver", c.gen_solver,
+                   "--step_size", str(c.gen_step_size),
+                   "--output_dir", str(out_dir)]
+            env = dict(os.environ, PYTHONPATH=f"{c.medsymm_root}/src")
+            print(f"generating {per_class}/class x {c.n_classes} classes")
+            res = subprocess.run(cmd, cwd=c.medsymm_root, env=env, capture_output=True, text=True)
+            if res.returncode != 0:
+                print(res.stdout[-3000:]); print(res.stderr[-3000:])
+                raise RuntimeError("generation failed: see output above")
+            meta = pd.read_csv(meta_path)
+            print("Generated", len(meta), "synthetic images ->", out_dir)
+            self.synthetic_meta = meta
+            return meta
+
         for name in ("normal", "pneumonia"):
             (out_dir / name).mkdir(parents=True, exist_ok=True)
 
@@ -714,8 +783,11 @@ class Experiment:
         return meta
 
     def visualize_samples(self, per_class=8):
-        fig, axes = plt.subplots(2, per_class, figsize=(2 * per_class, 4))
-        for r, cls in enumerate(["normal", "pneumonia"]):
+        names = self.cfg.class_names
+        fig, axes = plt.subplots(len(names), per_class,
+                                 figsize=(2 * per_class, 2 * len(names)))
+        axes = np.atleast_2d(axes)
+        for r, cls in enumerate(names):
             paths = self.synthetic_meta[self.synthetic_meta.class_name == cls]["image_path"].tolist()[:per_class]
             for a, pth in zip(axes[r], paths):
                 a.imshow(Image.open(pth), cmap="gray"); a.set_title(cls, fontsize=8); a.axis("off")
@@ -751,19 +823,21 @@ class Experiment:
     def _embed_paths(self, paths):
         enc = self._encoder()
         out = []
-        for x, _ in self.loader(PathDataset(paths, [0] * len(paths), self.embed_tf), batch_size=128):
+        for x, _ in self.loader(PathDataset(paths, [0] * len(paths), self.embed_tf,
+                                            mode=self.img_mode), batch_size=128):
             out.append(nn.functional.normalize(enc(x.to(self.device)), dim=1).cpu())
         return torch.cat(out).numpy()
 
     def _real_train_paths(self):
-        real_dir = self.scratch / "_real_train_png"
+        real_dir = self.scratch / f"_real_train_png_{self.cfg.dataset}"
         real_dir.mkdir(parents=True, exist_ok=True)
-        raw = PneumoniaMNIST(split="train", download=True, size=self.cfg.image_size)
+        ds_cls = getattr(medmnist, dataset_meta(self.cfg.dataset)["medmnist_class"])
+        raw = ds_cls(split="train", download=True, size=self.cfg.image_size)
         paths = []
         for i in range(len(raw)):
             p = real_dir / f"r_{i:05d}.png"
             if not p.exists():
-                raw[i][0].convert("L").save(p)
+                raw[i][0].convert(self.img_mode).save(p)
             paths.append(str(p))
         return paths
 
@@ -810,14 +884,15 @@ class Experiment:
         model = self.baseline_model(budget, seed)
         _, probs = self.predict_proba(model, self.loader(
             PathDataset(self.synthetic_meta.image_path,
-                        self.synthetic_meta.label.tolist(), self.eval_tf)))
+                        self.synthetic_meta.label.tolist(), self.eval_tf,
+                        mode=self.img_mode)))
         np.save(path, probs)
         return probs
 
     def _scorer_manifest(self, budget, seed):
         c = self.cfg
         return flt.scorer_manifest(
-            dataset="pneumoniamnist", arch=c.arch, pool=self.pool_hash(),
+            dataset=c.dataset, arch=c.arch, pool=self.pool_hash(),
             scorer=c.filter_scorer, scorer_budget=budget, scorer_seed=seed,
             pretrained=c.pretrained, epochs=c.epochs, lr=c.lr,
             batch_size=c.batch_size, image_size=c.image_size, use_amp=c.use_amp)
@@ -836,7 +911,7 @@ class Experiment:
             mem_b, mem_s = (None, None)
         return flt.filter_manifest(
             self._scorer_manifest(sb, ss) if resolved else
-            flt.scorer_manifest(dataset="pneumoniamnist", arch=c.arch, pool=self.pool_hash(),
+            flt.scorer_manifest(dataset=c.dataset, arch=c.arch, pool=self.pool_hash(),
                                 scorer="none", scorer_budget=None, scorer_seed=None,
                                 pretrained=c.pretrained, epochs=c.epochs, lr=c.lr,
                                 batch_size=c.batch_size, image_size=c.image_size,
@@ -932,11 +1007,10 @@ class Experiment:
 
     # --------------------------------------------------- synthetic arms (S1-3)
     def _synth_ds(self, df):
-        return PathDataset(df.image_path.tolist(), df.label.tolist(), self.train_tf)
+        return PathDataset(df.image_path.tolist(), df.label.tolist(), self.train_tf,
+                           mode=self.img_mode)
 
     def run_synthetic(self):
-        minority = int(np.argmin(np.bincount(self.train_labels_all, minlength=self.cfg.n_classes)))
-
         for seed in self.cfg.seeds:
             # S1 pretrains on the scorer-free, budget-independent pool (protocol choice:
             # per-budget filtering here would multiply pretraining cost by len(budgets)).
@@ -980,9 +1054,18 @@ class Experiment:
                 if self.already_done("S3", budget, seed, fkey):
                     print(f"  [skip] S3 n={budget} seed={seed}")
                 else:
-                    syn_minority = syn_df[syn_df.label == minority].reset_index(drop=True)
-                    n0, n1 = int((sub_labels == 0).sum()), int((sub_labels == 1).sum())
-                    add_df = syn_minority.iloc[:min(abs(n1 - n0), len(syn_minority))]
+                    # Top every class up to the majority count with its own synthetic
+                    # images (capped by availability). For 2 classes this reduces to
+                    # the old minority-to-parity top-up, same rows in the same order.
+                    counts = np.bincount(sub_labels, minlength=self.cfg.n_classes)
+                    adds = []
+                    for k in range(self.cfg.n_classes):
+                        need = int(counts.max() - counts[k])
+                        if need > 0:
+                            syn_k = syn_df[syn_df.label == k].reset_index(drop=True)
+                            adds.append(syn_k.iloc[:min(need, len(syn_k))])
+                    add_df = (pd.concat(adds, ignore_index=True) if adds
+                              else syn_df.iloc[:0])
                     s3_ds = ConcatDataset([IntLabel(real_sub), self._synth_ds(add_df)])
                     self.run_supervised("S3", s3_ds,
                                         np.concatenate([sub_labels, np.array(add_df.label)]),
@@ -1021,7 +1104,7 @@ class Experiment:
         # would be reused forever and measure_c1() could never compute an AUC.
         c = self.cfg
         out_csv = (c.run_dir /
-                   f"msf_preds_pneumoniamnist_test_{c.gen_image_size}_beta{c.gen_beta}"
+                   f"msf_preds_{c.dataset}_test_{c.gen_image_size}_beta{c.gen_beta}"
                    f"_{c.gen_solver}{c.gen_step_size}.csv")
         if out_csv.exists():
             return pd.read_csv(out_csv)
@@ -1030,7 +1113,7 @@ class Experiment:
         cmd = [
             "python", "project/classify_medmnist.py",
             "--checkpoint", c.checkpoint_path, "--output_csv", str(out_csv),
-            "--dataset", "pneumoniamnist", "--n_classes", "2",
+            "--dataset", c.dataset, "--n_classes", str(c.n_classes),
             "--image_size", str(c.gen_image_size), "--beta", str(c.gen_beta),
             "--rgb_mask", "--solver", c.gen_solver, "--step_size", str(c.gen_step_size),
         ]
@@ -1038,6 +1121,9 @@ class Experiment:
         res = subprocess.run(cmd, cwd=c.medsymm_root, env=env, capture_output=True, text=True)
         print(res.stdout.strip()[-800:])
         if res.returncode != 0:
+            if c.dataset != "pneumoniamnist":
+                print(res.stderr[-2500:])
+                raise RuntimeError("MSF classification failed")
             # Fall back to the legacy script: it yields no soft scores (so no measured C1
             # AUC) but still produces the hard predictions the fingerprint needs.
             print("classify_medmnist.py failed; falling back to classify_pneumoniamnist.py")
@@ -1074,21 +1160,26 @@ class Experiment:
         n_err = int(err.sum())
 
         def scores(model):
-            """Agreement, plus a CALIBRATION-MATCHED variant.
+            """Agreement, plus (binary only) a CALIBRATION-MATCHED variant.
 
-            Raw agreement is confounded: D1 trains on a near-balanced synthetic set while
-            B0 trains on 74%-pneumonia real data, so the two models sit at different
-            operating points and their agreement differs for reasons that have nothing to
-            do with copying a decision function. Matching each model's positive rate to
-            MSF's removes that prior difference before comparing.
+            Raw agreement is confounded: D1 trains on a near-balanced synthetic set
+            while B0 trains on the real class prior, so the two models sit at different
+            operating points. For binary tasks, matching each model's positive rate to
+            MSF's removes that prior difference; for K classes only raw agreement over
+            argmax predictions is reported.
             """
-            y, p = self.predict_probs(model, self.loader(self.test_set))
-            assert np.array_equal(y, ty), "test order mismatch between MSF CSV and loader"
-            raw = (p >= 0.5).astype(int)
-            thr = np.quantile(p, 1.0 - (msf_pred == 1).mean())   # match MSF's positive rate
-            matched = (p >= thr).astype(int)
+            if self.cfg.n_classes == 2:
+                y, p = self.predict_probs(model, self.loader(self.test_set))
+                assert np.array_equal(y, ty), "test order mismatch between MSF CSV and loader"
+                raw = (p >= 0.5).astype(int)
+                thr = np.quantile(p, 1.0 - (msf_pred == 1).mean())  # match MSF's positive rate
+                variants = (("", raw), ("_matched", (p >= thr).astype(int)))
+            else:
+                y, p = self.predict_proba(model, self.loader(self.test_set))
+                assert np.array_equal(y, ty), "test order mismatch between MSF CSV and loader"
+                variants = (("", p.argmax(1)),)
             out = {}
-            for name, pred in (("", raw), ("_matched", matched)):
+            for name, pred in variants:
                 out["agree_with_MSF" + name] = float((pred == msf_pred).mean())
                 out["agree_on_MSF_errors" + name] = (
                     float((pred[err] == msf_pred[err]).mean()) if n_err else np.nan)
@@ -1127,7 +1218,15 @@ class Experiment:
         y, pred = msf["true"].values, msf["msf_pred"].values
         acc = float((pred == y).mean())
         auc = np.nan
-        if "msf_negdist_1" in msf.columns:      # soft scores available -> real AUC
+        k = self.cfg.n_classes
+        dist_cols = [f"msf_negdist_{i}" for i in range(k)]
+        if k > 2 and all(col in msf.columns for col in dist_cols):
+            # macro one-vs-rest over softmaxed distance scores (sklearn requires
+            # the multi-class score matrix to row-normalise)
+            scores_ = np.exp(msf[dist_cols].values)
+            scores_ = scores_ / scores_.sum(axis=1, keepdims=True)
+            auc = float(roc_auc_score(y, scores_, multi_class="ovr", average="macro"))
+        elif "msf_negdist_1" in msf.columns:    # binary: soft scores -> real AUC
             auc = float(roc_auc_score(y, msf["msf_negdist_1"].values))
         elif "msf_negdist_0" in msf.columns:
             auc = float(roc_auc_score(y, -msf["msf_negdist_0"].values))
@@ -1167,7 +1266,7 @@ class Experiment:
         df = self.ledger
         if not len(df):
             return df
-        for col, val in (("dataset", "pneumoniamnist"), ("arch", self.cfg.arch),
+        for col, val in (("dataset", self.cfg.dataset), ("arch", self.cfg.arch),
                          ("run_tag", self.cfg.run_tag)):
             if col in df.columns:
                 df = df[df[col].fillna("").astype(str) == str(val)]
