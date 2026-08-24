@@ -101,10 +101,11 @@ def main():
     model.load_checkpoint(args.checkpoint)
     model.eval()
 
-    # Mirror the repo's own preprocessing: resize to image_size, 1 channel, [-1, 1].
+    # Mirror the repo's own preprocessing: resize to image_size, the dataset's
+    # native channel count (grayscale only for 1-channel datasets), [-1, 1].
     tf = transforms.Compose([
         transforms.Resize((args.image_size, args.image_size)),
-        transforms.Grayscale(num_output_channels=1),
+        *([transforms.Grayscale(num_output_channels=1)] if channels == 1 else []),
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,)),
     ])
