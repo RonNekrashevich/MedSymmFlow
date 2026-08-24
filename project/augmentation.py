@@ -995,12 +995,13 @@ class Experiment:
         for budget in c.budgets:
             for seed in c.seeds:
                 df, key = self.filtered_for(budget, seed)
-                rows.append({"budget": budget, "seed": seed, "mode": c.filter_mode,
-                             "scorer": c.filter_scorer, "mem_ref": c.mem_reference,
-                             "n_pool": len(self.synthetic_meta), "n_kept": len(df),
-                             "kept_class0": int((df.label == 0).sum()),
-                             "kept_class1": int((df.label == 1).sum()),
-                             "filter_key": key})
+                row = {"budget": budget, "seed": seed, "mode": c.filter_mode,
+                       "scorer": c.filter_scorer, "mem_ref": c.mem_reference,
+                       "n_pool": len(self.synthetic_meta), "n_kept": len(df)}
+                row.update({f"kept_class{k}": int((df.label == k).sum())
+                            for k in range(c.n_classes)})
+                row["filter_key"] = key
+                rows.append(row)
         summary = pd.DataFrame(rows)
         print(summary.to_string(index=False))
         return summary
