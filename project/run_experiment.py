@@ -63,6 +63,12 @@ def main():
     ap.add_argument("--gen-pretrain-epochs", type=int, default=0,
                     help=">0: pretrain the generator on ChestMNIST (no-finding vs "
                          "pneumonia, ~43k CXRs) before fine-tuning on the gen half")
+    ap.add_argument("--external-checkpoint", default=None,
+                    help="use this train_msf_external.py checkpoint AS the generator "
+                         "(zero benchmark images seen); classifier pool = full train split")
+    ap.add_argument("--gen-init-checkpoint", default=None,
+                    help="disjoint mode: warm-start scratch generator training from "
+                         "this checkpoint (external-corpus fine-tune variant)")
     ap.add_argument("--run-tag", default="", help="label this run in the ledger")
     ap.add_argument("--legacy-filter", action="store_true",
                     help="reproduce the old (budget-dependent, leaky) filter semantics")
@@ -105,8 +111,11 @@ def main():
             "gen_epochs": args.gen_epochs or (20 if args.quick else 600),
             "gen_lr": args.gen_lr, "gen_dropout": args.gen_dropout,
             "gen_balance": args.gen_balance,
-            "gen_pretrain_epochs": args.gen_pretrain_epochs}
+            "gen_pretrain_epochs": args.gen_pretrain_epochs,
+            "gen_init_checkpoint": args.gen_init_checkpoint}
            if args.gen_frac else {}),
+        **({"external_checkpoint": args.external_checkpoint}
+           if args.external_checkpoint else {}),
     )
     exp = Experiment(cfg)
 
@@ -134,7 +143,9 @@ def main():
                         "--beta", str(cfg.gen_beta),
                         *(["--balance-classes"] if cfg.gen_balance else []),
                         *(["--init-checkpoint", cfg.pretrain_checkpoint_path]
-                          if cfg.gen_pretrain_epochs else [])],
+                          if cfg.gen_pretrain_epochs else []),
+                        *(["--init-checkpoint", cfg.gen_init_checkpoint]
+                          if cfg.gen_init_checkpoint else [])],
                        check=True, cwd=str(REPO))
     print("== generation =="); exp.download_weights(); exp.generate_synthetic(); exp.visualize_samples()
     print("== filtering =="); exp.filter_synthetic()

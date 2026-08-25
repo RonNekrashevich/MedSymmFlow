@@ -135,6 +135,12 @@ class Config:
         self.gen_dropout = 0.0
         self.gen_balance = False          # 50/50 sampling of the 26%-normal gen half
         self.gen_pretrain_epochs = 0      # >0: ChestMNIST pretrain stage first
+        # External-corpus generators (e.g. APTOS for retina):
+        self.external_checkpoint = None   # use this checkpoint AS the generator; the
+                                          # generator saw zero benchmark images, so the
+                                          # classifier pool is the FULL train split
+        self.gen_init_checkpoint = None   # disjoint mode: warm-start the scratch
+                                          # training from this checkpoint (fine-tune)
 
         # Any remaining keyword sets an attribute directly, so every knob above is
         # reachable as Config(..., filter_mode="keep_uncertain", gen_beta=1.0).
@@ -151,16 +157,27 @@ class Config:
 
         # After overrides for the same reason: gen_frac/split_seed/gen_beta may all be
         # overridden, and the scratch checkpoint is keyed by all three.
-        if self.gen_frac:
+        assert not (self.external_checkpoint and self.gen_frac), \
+            "external_checkpoint replaces the generator entirely; gen_frac would be unused"
+        assert not (self.gen_init_checkpoint and self.gen_pretrain_epochs), \
+            "gen_init_checkpoint and gen_pretrain_epochs both warm-start; pick one"
+        if self.external_checkpoint:
+            self.checkpoint_path = str(self.external_checkpoint)
+        elif self.gen_frac:
             self.pretrain_checkpoint_path = (
                 f"{self.weights_root}/scratch/pretrain_chestmnist"
                 f"_e{self.gen_pretrain_epochs}_beta{self.gen_beta}_rgb.pt")
+            init_tag = ""
+            if self.gen_init_checkpoint:
+                init_hash = hashlib.sha1(
+                    Path(self.gen_init_checkpoint).name.encode()).hexdigest()[:8]
+                init_tag = f"_init{init_hash}"
             self.checkpoint_path = (
                 f"{self.weights_root}/scratch/FM_{self.dataset}_scratch"
                 f"_g{self.gen_frac}_ss{self.split_seed}_e{self.gen_epochs}"
                 f"_lr{self.gen_lr}_do{self.gen_dropout}"
                 f"_bal{int(self.gen_balance)}_pre{self.gen_pretrain_epochs}"
-                f"_beta{self.gen_beta}_rgb.pt")
+                f"{init_tag}_beta{self.gen_beta}_rgb.pt")
 
     @property
     def run_dir(self) -> Path:
@@ -680,6 +697,12 @@ class Experiment:
         repeatedly; both steps are skipped if their output already exists.
         """
         c = self.cfg
+        if c.external_checkpoint:
+            assert os.path.exists(c.checkpoint_path), (
+                f"external generator checkpoint missing: {c.checkpoint_path}\n"
+                f"train it with project/train_msf_external.py first")
+            print("External generator checkpoint present:", c.checkpoint_path)
+            return
         if c.gen_frac:
             # Disjoint mode never touches the published weights: the checkpoint must
             # come from train_msf_scratch.py (run_experiment.py trains it if missing).
