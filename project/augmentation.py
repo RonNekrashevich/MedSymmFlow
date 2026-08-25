@@ -135,6 +135,9 @@ class Config:
         self.gen_dropout = 0.0
         self.gen_balance = False          # 50/50 sampling of the 26%-normal gen half
         self.gen_pretrain_epochs = 0      # >0: ChestMNIST pretrain stage first
+        self.gen_mask_code = "rgb"        # rgb | onehot | thermometer (Phase B)
+        self.gen_cfg_drop = 0.0           # >0: train generator with code dropout
+        self.gen_cfg_w = 0.0              # >0: classifier-free guidance at sampling
         # External-corpus generators (e.g. APTOS for retina):
         self.external_checkpoint = None   # use this checkpoint AS the generator; the
                                           # generator saw zero benchmark images, so the
@@ -167,6 +170,8 @@ class Config:
             self.pretrain_checkpoint_path = (
                 f"{self.weights_root}/scratch/pretrain_chestmnist"
                 f"_e{self.gen_pretrain_epochs}_beta{self.gen_beta}_rgb.pt")
+            code_tag = "" if self.gen_mask_code == "rgb" else f"_mc-{self.gen_mask_code}"
+            drop_tag = "" if not self.gen_cfg_drop else f"_cd{self.gen_cfg_drop}"
             init_tag = ""
             if self.gen_init_checkpoint:
                 init_hash = hashlib.sha1(
@@ -177,7 +182,7 @@ class Config:
                 f"_g{self.gen_frac}_ss{self.split_seed}_e{self.gen_epochs}"
                 f"_lr{self.gen_lr}_do{self.gen_dropout}"
                 f"_bal{int(self.gen_balance)}_pre{self.gen_pretrain_epochs}"
-                f"{init_tag}_beta{self.gen_beta}_rgb.pt")
+                f"{code_tag}{drop_tag}{init_tag}_beta{self.gen_beta}_rgb.pt")
 
     @property
     def run_dir(self) -> Path:
@@ -758,6 +763,8 @@ class Experiment:
                    "--store_size", str(c.image_size), "--batch", str(c.gen_chunk),
                    "--rgb_mask", "--solver", c.gen_solver,
                    "--step_size", str(c.gen_step_size),
+                   "--mask_code", c.gen_mask_code,
+                   *(["--cfg_w", str(c.gen_cfg_w)] if c.gen_cfg_w else []),
                    "--output_dir", str(out_dir)]
             env = dict(os.environ, PYTHONPATH=f"{c.medsymm_root}/src")
             print(f"generating {per_class}/class x {c.n_classes} classes")
@@ -840,6 +847,7 @@ class Experiment:
     def _gen_manifest(self):
         c = self.cfg
         return {"checkpoint": Path(c.checkpoint_path).name, "beta": c.gen_beta,
+                "mask_code": c.gen_mask_code, "cfg_w": c.gen_cfg_w,
                 "step_size": c.gen_step_size, "solver": c.gen_solver,
                 "gen_image_size": c.gen_image_size, "image_size": c.image_size,
                 "syn_per_class": c.syn_per_class}
@@ -1154,7 +1162,8 @@ class Experiment:
             "--checkpoint", c.checkpoint_path, "--output_csv", str(out_csv),
             "--dataset", c.dataset, "--n_classes", str(c.n_classes),
             "--image_size", str(c.gen_image_size), "--beta", str(c.gen_beta),
-            "--rgb_mask", "--solver", c.gen_solver, "--step_size", str(c.gen_step_size),
+            "--rgb_mask", "--mask_code", c.gen_mask_code,
+            "--solver", c.gen_solver, "--step_size", str(c.gen_step_size),
         ]
         env = dict(os.environ, PYTHONPATH=f"{c.medsymm_root}/src")
         res = subprocess.run(cmd, cwd=c.medsymm_root, env=env, capture_output=True, text=True)

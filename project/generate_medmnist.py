@@ -64,6 +64,9 @@ def build_arg_parser():
     p.add_argument("--solver_lib", type=str, default="torchdiffeq")
     p.add_argument("--batch", type=int, default=100, help="samples per forward pass")
     p.add_argument("--rgb_mask", action="store_true", default=False)
+    p.add_argument("--mask_code", default="rgb", choices=["rgb", "onehot", "thermometer"])
+    p.add_argument("--cfg_w", type=float, default=0.0,
+                   help=">0: classifier-free guidance weight (model must be cfg-trained)")
     p.add_argument("--latent", action="store_true", default=False)
     p.add_argument("--num_workers", type=int, default=0)
     add_arch_cli(p)
@@ -114,6 +117,7 @@ def main():
     model_args.rgb_mask = args.rgb_mask or arch["rgb_mask"]
     model_args.latent = args.latent
     model_args.size = args.image_size
+    model_args.mask_code = args.mask_code
     apply_arch(model_args, arch)
 
     model = SymmFMClass(model_args, image_shape, channels)
@@ -128,7 +132,10 @@ def main():
         while made < args.per_class:
             n = min(args.batch, args.per_class - made)
             labels = torch.full((n,), label, dtype=torch.long, device=model.device)
-            samples = model.sample(n, labels=labels, train=False, fid=True)
+            if args.cfg_w > 0:
+                samples = model.sample_guided(n, labels, w=args.cfg_w)
+            else:
+                samples = model.sample(n, labels=labels, train=False, fid=True)
             for j, sample in enumerate(samples):
                 arr = sample.detach().cpu().float().clamp(0, 1).permute(1, 2, 0).numpy()
                 if arr.shape[2] == 1:

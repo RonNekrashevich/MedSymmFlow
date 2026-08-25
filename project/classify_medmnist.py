@@ -57,6 +57,7 @@ def build_arg_parser():
     p.add_argument("--step_size", type=float, default=0.04)
     p.add_argument("--solver_lib", type=str, default="torchdiffeq")
     p.add_argument("--rgb_mask", action="store_true", default=False)
+    p.add_argument("--mask_code", default="rgb", choices=["rgb", "onehot", "thermometer"])
     p.add_argument("--latent", action="store_true", default=False)
     p.add_argument("--num_workers", type=int, default=0)
     p.add_argument("--limit", type=int, default=None, help="debug: only classify N images")
@@ -95,6 +96,7 @@ def main():
     model_args.rgb_mask = args.rgb_mask or arch["rgb_mask"]
     model_args.latent = args.latent
     model_args.size = args.image_size
+    model_args.mask_code = args.mask_code
     apply_arch(model_args, arch)
 
     model = SymmFMClass(model_args, image_shape, channels)

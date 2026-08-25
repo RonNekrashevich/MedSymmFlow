@@ -47,16 +47,29 @@ class SymmFMClass(nn.Module):
         self.img_size = img_size
         self.rgb_mask = args.rgb_mask
 
+        # Class-code geometry: 'rgb' is the published palette encoding; 'onehot' and
+        # 'thermometer' use n_classes channels (thermometer makes adjacent ordinal
+        # grades near neighbours: grade k = +1 on channels 0..k, -1 above).
+        self.mask_code = getattr(args, "mask_code", "rgb")
+        # Classifier-free guidance: fraction of training samples whose class code is
+        # replaced by the null (all-zero) code, enabling guided sampling later.
+        self.cfg_drop = getattr(args, "cfg_drop", 0.0)
+
         # If using VAE, change the number of channels and image size accordingly
         if self.vae is not None:
+            assert self.mask_code == "rgb", "latent path supports the rgb code only"
             self.channels = 4
             self.img_size = self.img_size // 8
+            self.mask_dim = 4
             self.model_channels = self.channels * 2
         else:
-            if self.rgb_mask:
-                self.model_channels = self.channels + 3
+            if self.mask_code in ("onehot", "thermometer"):
+                self.mask_dim = args.n_classes
+            elif self.rgb_mask:
+                self.mask_dim = 3
             else:
-                self.model_channels = self.channels + 1
+                self.mask_dim = 1
+            self.model_channels = self.channels + self.mask_dim
 
         self.model = UNetModel(
             image_size=self.img_size,
@@ -95,6 +108,7 @@ class SymmFMClass(nn.Module):
         self.image_weight = args.image_weight
         self.n_classes = args.n_classes
         self.palette = build_palette(4, 75)
+        self._code_table = None
 
         if args.train:
             self.ema = copy.deepcopy(self.model)
@@ -109,6 +123,19 @@ class SymmFMClass(nn.Module):
         :param t: time
         '''
         return self.model(x, t)
+
+    def code_table(self):
+        '''(n_classes, mask_dim) class-code vectors in [-1, 1] for the K-channel codes.'''
+        if self._code_table is None:
+            K = self.n_classes
+            t = -torch.ones(K, K)
+            if self.mask_code == "onehot":
+                t[torch.arange(K), torch.arange(K)] = 1.0
+            else:  # thermometer: grade k lights channels 0..k
+                for k in range(K):
+                    t[k, :k + 1] = 1.0
+            self._code_table = t.to(self.device)
+        return self._code_table
     
     def symmetrical_flow_matching_loss(self, x, mask):
         '''
@@ -120,6 +147,14 @@ class SymmFMClass(nn.Module):
         '''
         sigma_min = 1e-4
         t = torch.rand(x.shape[0], device=x.device)
+
+        # Classifier-free guidance training: drop the class code on a random subset,
+        # replacing it with the null (zero) code plus the usual dequantization noise.
+        if self.cfg_drop > 0:
+            drop = torch.rand(x.shape[0], device=x.device) < self.cfg_drop
+            if drop.any():
+                mask = mask.clone()
+                mask[drop] = self.beta * (torch.rand_like(mask[drop]) - 0.5) / 127.5
 
         noise_x = torch.randn_like(x)
         noise_mask = torch.randn_like(mask)
@@ -220,6 +255,8 @@ class SymmFMClass(nn.Module):
         if fid:
             return samples
         
+        if mask.shape[1] not in (1, 3):     # K-channel codes: show the channel mean
+            mask = mask.mean(dim=1, keepdim=True)
         fig = plt.figure(figsize=(20, 10))
         grid_mask = make_grid(mask, nrow=int(n_samples**0.5), padding=0)
         grid = make_grid(samples, nrow=int(n_samples**0.5), padding=0)
@@ -239,6 +276,35 @@ class SymmFMClass(nn.Module):
         plt.close(fig)
 
     @torch.no_grad()
+    def sample_guided(self, n_samples, labels, w=1.5, steps=None):
+        '''
+        Classifier-free-guided sampling for the coupled image/mask system.
+
+        One image trajectory is guided by w-weighted conditional vs null-code
+        velocities; the two mask trajectories (conditional and null) each evolve
+        under their own dynamics. Requires a model trained with cfg_drop > 0.
+        Returns images in [0, 1] like sample(..., fid=True).
+        '''
+        assert self.vae is None, "guided sampling implemented for pixel space only"
+        steps = steps or max(1, int(1 / self.step_size))
+        dt = 1.0 / steps
+        x = torch.randn(n_samples, self.channels, self.img_size, self.img_size,
+                        device=self.device)
+        m_c = self.dequantize_class(labels).to(self.device)
+        m_u = self.beta * (torch.rand_like(m_c) - 0.5) / 127.5   # null code + noise
+        t = 0.0
+        for _ in range(steps):
+            tv = torch.full((n_samples,), t, device=self.device)
+            v_c = self.forward(torch.cat([x, m_c], dim=1), tv)
+            v_u = self.forward(torch.cat([x, m_u], dim=1), tv)
+            vx = v_u[:, :self.channels] + w * (v_c[:, :self.channels] - v_u[:, :self.channels])
+            x = x + dt * vx
+            m_c = m_c + dt * v_c[:, self.channels:]
+            m_u = m_u + dt * v_u[:, self.channels:]
+            t += dt
+        return (x * 0.5 + 0.5).clamp(0, 1)
+
+    @torch.no_grad()
     def segment(self, n_samples, x, train=True, accelerate=None, eval=False):
         '''
         Segment images
@@ -251,10 +317,7 @@ class SymmFMClass(nn.Module):
         if self.vae is not None:
             x_0 = torch.randn(n_samples, self.channels, self.img_size, self.img_size, device=self.device)
         else:
-            if self.rgb_mask:
-                x_0 = torch.randn(n_samples, 3, self.img_size, self.img_size, device=self.device)
-            else:
-                x_0 = torch.randn(n_samples, 1, self.img_size, self.img_size, device=self.device)
+            x_0 = torch.randn(n_samples, self.mask_dim, self.img_size, self.img_size, device=self.device)
         x_0 = torch.cat([x, x_0], dim=1)
 
         if train:
@@ -298,6 +361,8 @@ class SymmFMClass(nn.Module):
         x = x.clamp(0, 1)
 
         # plot two grids side by side, one with the original image and the other with the segmented image
+        if samples.shape[1] not in (1, 3):  # K-channel codes: show the channel mean
+            samples = samples.mean(dim=1, keepdim=True)
         fig = plt.figure(figsize=(20, 10))
         grid_x = make_grid(x, nrow=int(n_samples**0.5), padding=0)
         grid = make_grid(samples, nrow=int(n_samples**0.5), padding=0)
@@ -320,6 +385,12 @@ class SymmFMClass(nn.Module):
         :param mask: mask
         :param beta: beta value
         '''
+        if self.mask_code in ("onehot", "thermometer"):
+            table = self.code_table()                      # (K, D)
+            mask = table[label].view(label.shape[0], self.mask_dim, 1, 1)
+            mask = mask.expand(-1, -1, self.img_size, self.img_size).clone()
+            mask = mask + (self.beta) * (torch.rand_like(mask) - 0.5) / 127.5
+            return mask
         if self.rgb_mask:
             # we should spread the indices of the palette to push colors apart
             color_translation = torch.linspace(0, len(self.palette)-1, self.n_classes, device=self.device).long()
@@ -351,6 +422,18 @@ class SymmFMClass(nn.Module):
         :param mask: mask
         :param beta: beta value
         '''
+        if self.mask_code in ("onehot", "thermometer"):
+            table = self.code_table()
+            distances = torch.zeros(mask.shape[0], self.n_classes, device=self.device)
+            pixel_distances = torch.zeros(mask.shape[0], self.n_classes, mask.shape[2], mask.shape[3], device=self.device)
+            for i in range(self.n_classes):
+                ref = table[i].view(1, self.mask_dim, 1, 1)
+                distances[:, i] = torch.norm(mask - ref, dim=1).mean(dim=(1, 2))
+                pixel_distances[:, i] = torch.norm(mask - ref, dim=1)
+            mean_prediction = distances.argmin(dim=1)
+            mode_prediction = pixel_distances.argmin(dim=1)
+            mode_prediction = mode_prediction.flatten(start_dim=1).mode(dim=1)[0]
+            return mean_prediction, mode_prediction
         if self.rgb_mask:
             # we should spread the indices of the palette to push colors apart
             color_translation = torch.linspace(0, len(self.palette)-1, self.n_classes, device=self.device).long()
@@ -397,6 +480,13 @@ class SymmFMClass(nn.Module):
         :param mask: mask
         :param beta: beta value
         '''
+        if self.mask_code in ("onehot", "thermometer"):
+            table = self.code_table()
+            distances = torch.zeros(mask.shape[0], self.n_classes, device=self.device)
+            for i in range(self.n_classes):
+                ref = table[i].view(1, self.mask_dim, 1, 1)
+                distances[:, i] = torch.norm(mask - ref, dim=1).mean(dim=(1, 2))
+            return distances
         if self.rgb_mask:
             # we should spread the indices of the palette to push colors apart
             color_translation = torch.linspace(0, len(self.palette)-1, self.n_classes, device=self.device).long()

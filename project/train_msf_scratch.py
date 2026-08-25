@@ -59,6 +59,10 @@ def build_arg_parser():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--num-workers", type=int, default=2)
     p.add_argument("--dropout", type=float, default=0.0)
+    p.add_argument("--mask-code", default="rgb", choices=["rgb", "onehot", "thermometer"])
+    p.add_argument("--cfg-drop", type=float, default=0.0,
+                   help="fraction of training samples with the class code nulled "
+                        "(enables classifier-free guidance at sampling)")
     p.add_argument("--balance-classes", action="store_true",
                    help="50/50 weighted sampling of the generator half (normal is the "
                         "26% minority), so both mask conditions train equally often")
@@ -140,6 +144,8 @@ def main():
     model_args.num_head_channels = 64
     model_args.attention_resolutions = (2,)
     model_args.dropout = args.dropout
+    model_args.mask_code = args.mask_code
+    model_args.cfg_drop = args.cfg_drop
 
     model = SymmFMClass(model_args, 32, meta["channels"])
     if args.init_checkpoint:
@@ -170,6 +176,7 @@ def main():
         "gen_idx_sha1": split_fingerprint(gen_idx),
         "epochs": args.epochs, "batch_size": args.batch_size, "lr": args.lr,
         "dropout": args.dropout, "balance_classes": args.balance_classes,
+        "mask_code": args.mask_code, "cfg_drop": args.cfg_drop,
         "init_checkpoint": args.init_checkpoint or "",
         "beta": args.beta, "seed": args.seed, "source_snapshot": latest.name,
         "trained_at": time.strftime("%Y-%m-%dT%H:%M:%S"),

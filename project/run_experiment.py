@@ -66,6 +66,13 @@ def main():
     ap.add_argument("--external-checkpoint", default=None,
                     help="use this train_msf_external.py checkpoint AS the generator "
                          "(zero benchmark images seen); classifier pool = full train split")
+    ap.add_argument("--gen-mask-code", default="rgb",
+                    choices=["rgb", "onehot", "thermometer"],
+                    help="class-code geometry for the generator (Phase B)")
+    ap.add_argument("--gen-cfg-drop", type=float, default=0.0,
+                    help=">0: train the generator with class-code dropout (enables CFG)")
+    ap.add_argument("--gen-cfg-w", type=float, default=0.0,
+                    help=">0: classifier-free guidance weight at generation")
     ap.add_argument("--gen-init-checkpoint", default=None,
                     help="disjoint mode: warm-start scratch generator training from "
                          "this checkpoint (external-corpus fine-tune variant)")
@@ -112,7 +119,9 @@ def main():
             "gen_lr": args.gen_lr, "gen_dropout": args.gen_dropout,
             "gen_balance": args.gen_balance,
             "gen_pretrain_epochs": args.gen_pretrain_epochs,
-            "gen_init_checkpoint": args.gen_init_checkpoint}
+            "gen_init_checkpoint": args.gen_init_checkpoint,
+            "gen_mask_code": args.gen_mask_code,
+            "gen_cfg_drop": args.gen_cfg_drop, "gen_cfg_w": args.gen_cfg_w}
            if args.gen_frac else {}),
         **({"external_checkpoint": args.external_checkpoint}
            if args.external_checkpoint else {}),
@@ -140,6 +149,8 @@ def main():
                         "--batch-size", str(args.gen_batch_size),
                         "--lr", str(cfg.gen_lr),
                         "--dropout", str(cfg.gen_dropout),
+                        "--mask-code", cfg.gen_mask_code,
+                        "--cfg-drop", str(cfg.gen_cfg_drop),
                         "--beta", str(cfg.gen_beta),
                         *(["--balance-classes"] if cfg.gen_balance else []),
                         *(["--init-checkpoint", cfg.pretrain_checkpoint_path]
