@@ -179,7 +179,15 @@ def main():
             exp._filter_cache.clear()
             exp.filter_synthetic(plot=False)
             exp.run_synthetic()
-        abl = exp.summarize(select=False)[0]
+        # Group by run_tag so each filter mode gets its own rows -- pooling modes
+        # into one mean (the old behaviour) produced a meaningless average.
+        led = exp.ledger
+        led = led[led["arm"].isin(["S1", "S2", "S3"])]
+        aggs = dict(auc_mean=("test_auc", "mean"), acc_mean=("test_acc", "mean"),
+                    n_seeds=("test_auc", "count"))
+        if "test_qwk" in led.columns:
+            aggs["qwk_mean"] = ("test_qwk", "mean")
+        abl = (led.groupby(["run_tag", "arm", "budget"]).agg(**aggs).reset_index())
         abl.to_csv(out / "filter_ablation.csv", index=False)
         print(abl.to_string(index=False))
 
