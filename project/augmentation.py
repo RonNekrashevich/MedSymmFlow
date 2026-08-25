@@ -89,6 +89,7 @@ class Config:
 
         # ---- training knobs (were hardcoded; needed for arch/resolution sweeps later)
         self.arch = "resnet18"
+        self.mixup_alpha = 0.2     # B3: the modern-augmentation baseline synthetic must beat
         self.pretrained = True
         self.batch_size = 64
         self.lr = 1e-4
@@ -440,7 +441,8 @@ class Experiment:
         """Back-compat alias; delegates without touching the construction order."""
         return self.build_model(num_classes, pretrained)
 
-    def run_epoch(self, model, loader, criterion, optimizer=None, scaler=None):
+    def run_epoch(self, model, loader, criterion, optimizer=None, scaler=None,
+                  mixup_alpha=0.0):
         training = optimizer is not None
         model.train(training)
         losses = []
@@ -450,10 +452,20 @@ class Experiment:
             # squeeze() collapses it to 0-dim -> CrossEntropyLoss errors. Never fired at
             # 4708/524/624 but will as soon as a filtered set has size = 1 (mod batch).
             labels = labels.reshape(-1).long().to(self.device)
+            do_mix = training and mixup_alpha > 0 and images.size(0) > 1
+            if do_mix:
+                lam = float(np.random.beta(mixup_alpha, mixup_alpha))
+                perm = torch.randperm(images.size(0), device=images.device)
+                images = lam * images + (1.0 - lam) * images[perm]
+                labels_b = labels[perm]
             with torch.set_grad_enabled(training):
                 with torch.autocast("cuda", enabled=self.cfg.use_amp):
                     logits = model(images)
-                    loss = criterion(logits, labels)
+                    if do_mix:
+                        loss = (lam * criterion(logits, labels)
+                                + (1.0 - lam) * criterion(logits, labels_b))
+                    else:
+                        loss = criterion(logits, labels)
                 if training:
                     optimizer.zero_grad()
                     if scaler is not None:
@@ -532,7 +544,8 @@ class Experiment:
         return torch.tensor(w, dtype=torch.float32, device=self.device)
 
     def train_classifier(self, train_ds, train_labels, seed, epochs=None, lr=None,
-                         init_state=None, weighted=False, sampler=None, tag=""):
+                         init_state=None, weighted=False, sampler=None, tag="",
+                         mixup_alpha=0.0):
         epochs = epochs or self.cfg.epochs
         lr = self.cfg.lr if lr is None else lr
         self.set_seed(seed)
@@ -546,7 +559,8 @@ class Experiment:
         loader = self.loader(train_ds, shuffle=True, sampler=sampler)
         best_auc, best_state = -1.0, None
         for _ in range(epochs):
-            self.run_epoch(model, loader, criterion, optimizer, scaler)
+            self.run_epoch(model, loader, criterion, optimizer, scaler,
+                           mixup_alpha=mixup_alpha)
             val_auc = self._val_auc(model)
             if val_auc > best_auc:
                 best_auc = val_auc
@@ -648,7 +662,8 @@ class Experiment:
                     self._persist_baseline(model, budget, seed)
 
                 for arm, kw in (("B1", dict(weighted=True)),
-                                ("B2", dict(weighted=False, sampler=self.oversampler(sub_labels)))):
+                                ("B2", dict(weighted=False, sampler=self.oversampler(sub_labels))),
+                                ("B3", dict(weighted=False, mixup_alpha=self.cfg.mixup_alpha))):
                     if self.already_done(arm, budget, seed):
                         print(f"  [skip] {arm} n={budget} seed={seed} (in ledger)")
                         continue
@@ -1288,7 +1303,7 @@ class Experiment:
             aggs["qwk_ci"] = ("test_qwk", self._ci95)
         summary = (res.groupby(["arm", "budget"]).agg(**aggs).reset_index())
 
-        BASE, SYN = ["B0", "B1", "B2"], ["S1", "S2", "S3"]
+        BASE, SYN = ["B0", "B1", "B2", "B3"], ["S1", "S2", "S3"]
         # dropna=False keeps all-NaN CI columns (e.g. single-seed quick runs), so
         # `means` and `cis` stay column-aligned.
         means = summary.pivot_table(index="budget", columns="arm", values="auc_mean", dropna=False)
@@ -1337,8 +1352,9 @@ class Experiment:
 
     def plot(self, summary):
         fig, ax = plt.subplots(figsize=(8, 5))
-        palette = {"B0": "C0", "B1": "C1", "B2": "C2", "S1": "C3", "S2": "C4", "S3": "C5"}
-        for arm in ["B0", "B1", "B2", "S1", "S2", "S3"]:
+        palette = {"B0": "C0", "B1": "C1", "B2": "C2", "B3": "C7",
+                   "S1": "C3", "S2": "C4", "S3": "C5"}
+        for arm in ["B0", "B1", "B2", "B3", "S1", "S2", "S3"]:
             d = summary[summary.arm == arm].sort_values("budget")
             if len(d):
                 ls = "--" if arm.startswith("B") else "-"
