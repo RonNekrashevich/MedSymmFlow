@@ -36,7 +36,8 @@ if command -v mountpoint >/dev/null 2>&1 && mountpoint -q "$DATA_ROOT"; then
   exit 1
 fi
 if [ -d "$DATA_ROOT" ] && [ -n "$(find "$DATA_ROOT" -maxdepth 1 -mindepth 1 \
-      ! -name weights ! -name pipcache ! -name runs ! -name hf -print -quit 2>/dev/null)" ]; then
+      ! -name weights ! -name pipcache ! -name runs ! -name hf \
+      ! -name external -print -quit 2>/dev/null)" ]; then
   echo "REFUSING TO RUN: '$DATA_ROOT' already contains files this project did not create." >&2
   echo "That usually means it is somebody else's folder. Contents:" >&2
   ls -la "$DATA_ROOT" >&2
