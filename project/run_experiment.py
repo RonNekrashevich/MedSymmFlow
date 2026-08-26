@@ -41,7 +41,11 @@ def main():
     ap.add_argument("--quick", action="store_true", help="fast smoke test (overrides seeds/budgets)")
     ap.add_argument("--pip", action="store_true", help="pip install the light deps first")
     ap.add_argument("--filter-mode", default="keep_confident",
-                    choices=["none", "keep_confident", "keep_uncertain", "random_match"])
+                    choices=["none", "keep_confident", "keep_uncertain", "random_match",
+                             "self_consistent"])
+    ap.add_argument("--self-q", type=float, default=0.5,
+                    help="self_consistent: per-class top fraction kept by the "
+                         "generator's own round-trip confidence")
     ap.add_argument("--filter-scorer", default="local", choices=["none", "local", "full"])
     ap.add_argument("--conf-thresh", type=float, default=0.60)
     ap.add_argument("--mem-reference", default="local", choices=["none", "local", "full"])
@@ -117,6 +121,7 @@ def main():
         seeds=(None if args.quick else args.seeds),
         budgets=(None if args.quick else args.budgets),
         filter_mode=args.filter_mode,
+        self_filter_q=args.self_q,
         filter_scorer=args.filter_scorer,
         conf_thresh=args.conf_thresh,
         mem_reference=args.mem_reference,

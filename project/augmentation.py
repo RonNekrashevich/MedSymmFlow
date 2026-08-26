@@ -99,7 +99,8 @@ class Config:
         # ---- filtering (see filtering.py). Defaults are the scientifically defensible
         # ones: the filter may only use labels the hypothetical institution owns, so no
         # budget-N information leaks into a budget-500 arm.
-        self.filter_mode = "keep_confident"     # none|keep_confident|keep_uncertain|random_match
+        self.filter_mode = "keep_confident"     # none|keep_confident|keep_uncertain|random_match|self_consistent
+        self.self_filter_q = 0.5                # self_consistent: per-class top fraction kept
         self.filter_scorer = "local"            # none|local|full  (local = the arm's own model)
         self.filter_scorer_budget = None        # explicit override for ablations
         self.filter_scorer_seed = None
@@ -969,11 +970,84 @@ class Experiment:
             embed_id=c.embed_id, random_seed=c.filter_random_seed,
             mem_budget=mem_b, mem_seed=mem_s), resolved
 
+    def self_scores(self):
+        """Generator self-consistency scores for the synthetic pool (cached CSV).
+        Runs score_synthetic.py (reverse-flow classification of the pool by its
+        own generator) the first time; aligned to synthetic_meta by image_path."""
+        c = self.cfg
+        path = self.synthetic_dir / "self_scores.csv"
+        if not path.exists():
+            cmd = ["python", "project/score_synthetic.py",
+                   "--checkpoint", c.checkpoint_path,
+                   "--synthetic-dir", str(self.synthetic_dir),
+                   "--dataset", c.dataset, "--n_classes", str(c.n_classes),
+                   "--image_size", str(c.gen_image_size), "--beta", str(c.gen_beta),
+                   "--mask_code", c.gen_mask_code,
+                   "--solver", c.gen_solver, "--step_size", str(c.gen_step_size)]
+            env = dict(os.environ, PYTHONPATH=f"{c.medsymm_root}/src")
+            res = subprocess.run(cmd, cwd=c.medsymm_root, env=env,
+                                 capture_output=True, text=True)
+            print(res.stdout[-1200:])
+            if res.returncode != 0:
+                print(res.stderr[-2000:])
+                raise RuntimeError("self-consistency scoring failed")
+        s = pd.read_csv(path)
+        merged = self.synthetic_meta.merge(
+            s[["image_path", "pred", "margin", "match"]], on="image_path", how="left")
+        assert not merged.pred.isna().any(), "self_scores.csv does not cover the pool"
+        return merged
+
+    def _self_keep(self):
+        """Per-class keep mask: round-trip match AND margin in the class's top q."""
+        c = self.cfg
+        m = self.self_scores()
+        keep = np.zeros(len(m), dtype=bool)
+        for k in range(c.n_classes):
+            cls = ((m.label == k) & (m.match == 1)).values
+            if cls.sum() == 0:
+                print(f"  WARNING: class {k} has zero self-consistent images")
+                continue
+            thr = np.quantile(m.margin.values[cls], 1.0 - c.self_filter_q)
+            keep |= cls & (m.margin.values >= thr)
+        return keep
+
     def filtered_for(self, budget, seed):
         """The synthetic subset this arm may train on. Deterministic and cached."""
         if (budget, seed) in self._filter_cache:
             return self._filter_cache[(budget, seed)]
         c = self.cfg
+        if c.filter_mode == "self_consistent":
+            # Budget-independent: the generator judges its own pool once. The mem
+            # screen still applies (self-consistency cannot detect near-copies).
+            manifest = {"v": 1, "mode": "self_consistent", "q": c.self_filter_q,
+                        "pool": self.pool_hash(),
+                        "checkpoint": Path(c.checkpoint_path).name,
+                        "mem_quantile": c.mem_quantile, "embed_id": c.embed_id,
+                        "dataset": c.dataset}
+            mhash = hashlib.sha1(json.dumps(manifest, sort_keys=True).encode()).hexdigest()[:8]
+            key = f"{c.dataset}_selfq{c.self_filter_q}_{mhash}"
+            out_dir = self.filters_dir / key
+            meta_path = out_dir / "metadata.csv"
+            if meta_path.exists():
+                df = pd.read_csv(meta_path)
+                self._filter_cache[(budget, seed)] = (df, key)
+                return df, key
+            nn_dist = self._mem_distances(None)
+            labels = np.array(self.synthetic_meta.label)
+            keep_mem, _, _ = flt.derive_keep(nn_dist, None, labels, mode="none",
+                                             mem_mode=c.mem_mode,
+                                             mem_quantile=c.mem_quantile,
+                                             mem_thresh=c.mem_thresh)
+            keep = keep_mem & self._self_keep()
+            df = self.synthetic_meta[keep].reset_index(drop=True)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            df.to_csv(meta_path, index=False)
+            (out_dir / "manifest.json").write_text(json.dumps(
+                {**manifest, "n_pool": int(len(keep)), "n_kept": int(keep.sum()),
+                 "kept_per_class": [int(((labels == k) & keep).sum())
+                                    for k in range(c.n_classes)]}, indent=2))
+            self._filter_cache[(budget, seed)] = (df, key)
+            return df, key
         manifest, resolved = self._filter_manifest(budget, seed)
         key = flt.make_key(manifest)
         out_dir = self.filters_dir / key
