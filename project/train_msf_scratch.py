@@ -55,7 +55,11 @@ def build_arg_parser():
     p.add_argument("--beta", type=float, default=4.0)
     p.add_argument("--size", type=int, default=32,
                    help="generator resolution; 32 uses the 28px source (published), "
-                        "64 loads the native 64px MedMNIST source")
+                        "64 loads the native 64px MedMNIST source, 256 loads the "
+                        "224px MedMNIST+ source (for --latent)")
+    p.add_argument("--latent", action="store_true",
+                   help="LatMSF: flow in the SD-VAE latent space (size/8 latents; "
+                        "sensible only at --size 256, where latents are 32x32)")
     p.add_argument("--warmup", type=int, default=10)
     p.add_argument("--snapshots", type=int, default=10)
     p.add_argument("--sample-freq", type=int, default=50)
@@ -94,7 +98,9 @@ def main():
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,)),
     ])
-    src_size = 28 if args.size == 32 else args.size   # 32 keeps the published 28->32 path
+    # 32 keeps the published 28->32 path; 256 upsamples the 224px MedMNIST+ source
+    # so the SD-VAE latents are 32x32 (224/8=28 breaks the UNet's stride geometry).
+    src_size = {32: 28, 256: 224}.get(args.size, args.size)
     full_train = ds_cls(split="train", download=True, transform=tf, size=src_size)
     assert len(full_train) == meta["splits"][0], len(full_train)
     labels = np.array(full_train.labels).reshape(-1)
@@ -150,6 +156,7 @@ def main():
     model_args.dropout = args.dropout
     model_args.mask_code = args.mask_code
     model_args.cfg_drop = args.cfg_drop
+    model_args.latent = args.latent
 
     model = SymmFMClass(model_args, args.size, meta["channels"])
     if args.init_checkpoint:
@@ -165,7 +172,7 @@ def main():
     # train_model saved EMA snapshots under models_dir; pick the newest one this run
     # produced (mtime >= start guards against stale files from earlier runs).
     snap_dir = Path(models_dir) / "SymmetricalFlowMatchingClass"
-    pattern = f"FM_{args.dataset}_beta{args.beta}_rgb_epoch*.pt"
+    pattern = f"{'LatFM' if args.latent else 'FM'}_{args.dataset}_beta{args.beta}_rgb_epoch*.pt"
     snaps = [p for p in snap_dir.glob(pattern) if p.stat().st_mtime >= start - 60]
     assert snaps, f"no fresh snapshot matching {pattern} in {snap_dir}"
     latest = max(snaps, key=lambda p: int(p.stem.split("epoch")[1]))
@@ -178,7 +185,7 @@ def main():
         "gen_frac": args.gen_frac, "split_seed": args.split_seed,
         "n_gen": len(gen_idx), "n_clf_pool": len(clf_idx),
         "gen_idx_sha1": split_fingerprint(gen_idx),
-        "size": args.size,
+        "size": args.size, "latent": args.latent,
         "epochs": args.epochs, "batch_size": args.batch_size, "lr": args.lr,
         "dropout": args.dropout, "balance_classes": args.balance_classes,
         "mask_code": args.mask_code, "cfg_drop": args.cfg_drop,

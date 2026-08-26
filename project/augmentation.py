@@ -141,6 +141,8 @@ class Config:
         self.gen_mask_code = "rgb"        # rgb | onehot | thermometer (Phase B)
         self.gen_cfg_drop = 0.0           # >0: train generator with code dropout
         self.gen_cfg_w = 0.0              # >0: classifier-free guidance at sampling
+        self.gen_latent = False           # LatMSF: flow in SD-VAE latent space
+                                          # (use gen_image_size=256 -> 32x32 latents)
         # External-corpus generators (e.g. APTOS for retina):
         self.external_checkpoint = None   # use this checkpoint AS the generator; the
                                           # generator saw zero benchmark images, so the
@@ -174,6 +176,8 @@ class Config:
                 f"{self.weights_root}/scratch/pretrain_chestmnist"
                 f"_e{self.gen_pretrain_epochs}_beta{self.gen_beta}_rgb.pt")
             size_tag = "" if self.gen_image_size == 32 else f"_sz{self.gen_image_size}"
+            if self.gen_latent:
+                size_tag += "_lat"
             code_tag = "" if self.gen_mask_code == "rgb" else f"_mc-{self.gen_mask_code}"
             drop_tag = "" if not self.gen_cfg_drop else f"_cd{self.gen_cfg_drop}"
             init_tag = ""
@@ -769,6 +773,7 @@ class Experiment:
                    "--step_size", str(c.gen_step_size),
                    "--mask_code", c.gen_mask_code,
                    *(["--cfg_w", str(c.gen_cfg_w)] if c.gen_cfg_w else []),
+                   *(["--latent"] if c.gen_latent else []),
                    "--output_dir", str(out_dir)]
             env = dict(os.environ, PYTHONPATH=f"{c.medsymm_root}/src")
             print(f"generating {per_class}/class x {c.n_classes} classes")
@@ -985,6 +990,7 @@ class Experiment:
                    "--dataset", c.dataset, "--n_classes", str(c.n_classes),
                    "--image_size", str(c.gen_image_size), "--beta", str(c.gen_beta),
                    "--mask_code", c.gen_mask_code,
+                   *(["--latent"] if c.gen_latent else []),
                    "--solver", c.gen_solver, "--step_size", str(c.gen_step_size)]
             env = dict(os.environ, PYTHONPATH=f"{c.medsymm_root}/src")
             res = subprocess.run(cmd, cwd=c.medsymm_root, env=env,
@@ -1274,6 +1280,7 @@ class Experiment:
             "--dataset", c.dataset, "--n_classes", str(c.n_classes),
             "--image_size", str(c.gen_image_size), "--beta", str(c.gen_beta),
             "--rgb_mask", "--mask_code", c.gen_mask_code,
+            *(["--latent", "--source_size", "224"] if c.gen_latent else []),
             "--solver", c.gen_solver, "--step_size", str(c.gen_step_size),
         ]
         env = dict(os.environ, PYTHONPATH=f"{c.medsymm_root}/src")

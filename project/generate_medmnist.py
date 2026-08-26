@@ -134,6 +134,13 @@ def main():
             labels = torch.full((n,), label, dtype=torch.long, device=model.device)
             if args.cfg_w > 0:
                 samples = model.sample_guided(n, labels, w=args.cfg_w)
+            elif model.vae is not None:
+                # Latent path: sample() expects an ALREADY-ENCODED mask (the repo's
+                # classification.py does the same encode before calling sample).
+                mask = model.dequantize_class(labels).to(model.device)
+                with torch.no_grad():
+                    mask = model.encode(mask).latent_dist.sample().mul_(0.18215)
+                samples = model.sample(n, mask=mask, train=False, fid=True)
             else:
                 samples = model.sample(n, labels=labels, train=False, fid=True)
             for j, sample in enumerate(samples):

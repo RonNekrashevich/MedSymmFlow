@@ -126,6 +126,10 @@ def main():
         if not buf_x:
             return
         x = torch.stack(buf_x).to(model.device)
+        if model.vae is not None:   # latent path: segment() expects encoded input
+            if x.shape[1] == 1:
+                x = torch.cat((x, x, x), dim=1)
+            x = model.encode(x).latent_dist.sample().mul_(0.18215)
         mask = model.segment(x.shape[0], x, train=False, eval=True)
         mean_p, mode_p = model.quantize_class(mask)
         d = model.distance_to_classes(mask)

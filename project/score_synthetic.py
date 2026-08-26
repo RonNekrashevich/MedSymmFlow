@@ -51,6 +51,7 @@ def build_arg_parser():
                    help="output CSV name inside the synthetic dir (use a distinct "
                         "name for step-size variants so score files never collide)")
     p.add_argument("--rgb_mask", action="store_true", default=True)
+    p.add_argument("--latent", action="store_true", default=False)
     add_arch_cli(p)
     return p
 
@@ -75,7 +76,7 @@ def main():
     model_args.step_size = args.step_size
     model_args.beta = args.beta
     model_args.rgb_mask = True
-    model_args.latent = False
+    model_args.latent = args.latent
     model_args.size = args.image_size
     model_args.mask_code = args.mask_code
     apply_arch(model_args, arch)
@@ -101,6 +102,10 @@ def main():
             chunk = pool.iloc[i:i + args.batch]
             xs = torch.stack([tf(Image.open(p).convert(mode)) for p in chunk.image_path])
             xs = xs.to(model.device)
+            if model.vae is not None:   # latent path: segment() expects encoded input
+                if xs.shape[1] == 1:
+                    xs = torch.cat((xs, xs, xs), dim=1)
+                xs = model.encode(xs).latent_dist.sample().mul_(0.18215)
             mask = model.segment(xs.shape[0], xs, train=False, eval=True)
             d = model.distance_to_classes(mask).float().cpu().numpy()
             s = np.sort(d, axis=1)

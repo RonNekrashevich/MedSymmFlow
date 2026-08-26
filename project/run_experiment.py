@@ -91,7 +91,11 @@ def main():
     ap.add_argument("--image-size", type=int, default=28, choices=[28, 64],
                     help="classifier resolution (MedMNIST source size)")
     ap.add_argument("--gen-size", type=int, default=32,
-                    help="generator resolution (32 = published 28->32; 64 = native 64px)")
+                    help="generator resolution (32 = published 28->32; 64 = native 64px; "
+                         "256 = MedMNIST+ 224px source, for --gen-latent)")
+    ap.add_argument("--gen-latent", action="store_true",
+                    help="LatMSF: generator flows in SD-VAE latent space (use with "
+                         "--gen-size 256 so latents are 32x32)")
     ap.add_argument("--run-tag", default="", help="label this run in the ledger")
     ap.add_argument("--legacy-filter", action="store_true",
                     help="reproduce the old (budget-dependent, leaky) filter semantics")
@@ -142,7 +146,8 @@ def main():
             "gen_pretrain_epochs": args.gen_pretrain_epochs,
             "gen_init_checkpoint": args.gen_init_checkpoint,
             "gen_mask_code": args.gen_mask_code,
-            "gen_cfg_drop": args.gen_cfg_drop, "gen_cfg_w": args.gen_cfg_w}
+            "gen_cfg_drop": args.gen_cfg_drop, "gen_cfg_w": args.gen_cfg_w,
+            "gen_latent": args.gen_latent}
            if args.gen_frac else {}),
         **({"external_checkpoint": args.external_checkpoint}
            if args.external_checkpoint else {}),
@@ -174,6 +179,7 @@ def main():
                         "--cfg-drop", str(cfg.gen_cfg_drop),
                         "--beta", str(cfg.gen_beta),
                         "--size", str(cfg.gen_image_size),
+                        *(["--latent"] if cfg.gen_latent else []),
                         *(["--balance-classes"] if cfg.gen_balance else []),
                         *(["--init-checkpoint", cfg.pretrain_checkpoint_path]
                           if cfg.gen_pretrain_epochs else []),
