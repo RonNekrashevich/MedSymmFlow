@@ -170,6 +170,7 @@ class Config:
             self.pretrain_checkpoint_path = (
                 f"{self.weights_root}/scratch/pretrain_chestmnist"
                 f"_e{self.gen_pretrain_epochs}_beta{self.gen_beta}_rgb.pt")
+            size_tag = "" if self.gen_image_size == 32 else f"_sz{self.gen_image_size}"
             code_tag = "" if self.gen_mask_code == "rgb" else f"_mc-{self.gen_mask_code}"
             drop_tag = "" if not self.gen_cfg_drop else f"_cd{self.gen_cfg_drop}"
             init_tag = ""
@@ -182,7 +183,7 @@ class Config:
                 f"_g{self.gen_frac}_ss{self.split_seed}_e{self.gen_epochs}"
                 f"_lr{self.gen_lr}_do{self.gen_dropout}"
                 f"_bal{int(self.gen_balance)}_pre{self.gen_pretrain_epochs}"
-                f"{code_tag}{drop_tag}{init_tag}_beta{self.gen_beta}_rgb.pt")
+                f"{size_tag}{code_tag}{drop_tag}{init_tag}_beta{self.gen_beta}_rgb.pt")
 
     @property
     def run_dir(self) -> Path:
@@ -1119,6 +1120,28 @@ class Experiment:
                                         budget, seed, weighted=False,
                                         filter_key=fkey, n_syn_used=len(add_df))
 
+    def run_exchange_rate(self, sizes):
+        """DX: synthetic-only training at matched sizes -- the synthetic-vs-real
+        exchange-rate curve. Stratified subsamples of the mem-only pool; recorded
+        as arm 'DX' with budget = synthetic count, so the ledger overlays directly
+        on the real-budget baselines."""
+        pool = self.filtered
+        labels = np.array(pool.label)
+        for seed in self.cfg.seeds:
+            for n in sizes:
+                if self.already_done("DX", n, seed):
+                    print(f"  [skip] DX n={n} seed={seed}")
+                    continue
+                rng = np.random.default_rng(10000 + seed)
+                idx = []
+                for c in range(self.cfg.n_classes):
+                    c_idx = np.where(labels == c)[0]
+                    take = min(int(round(n * len(c_idx) / len(labels))), len(c_idx))
+                    idx.extend(rng.choice(c_idx, size=take, replace=False).tolist())
+                df = pool.iloc[sorted(idx)].reset_index(drop=True)
+                self.run_supervised("DX", self._synth_ds(df), np.array(df.label),
+                                    n, seed, weighted=False, n_syn_used=len(df))
+
     # ---------------------------------------------- distillation diagnostics
     def run_diagnostic_d1(self):
         """D1: train on synthetic ONLY, test on real. If D1 recovers baseline/C1-level
@@ -1265,6 +1288,10 @@ class Experiment:
         msf = self.msf_test_predictions()
         y, pred = msf["true"].values, msf["msf_pred"].values
         acc = float((pred == y).mean())
+        if "msf_pred_mode" in msf.columns:
+            mode_acc = float((msf["msf_pred_mode"].values == y).mean())
+            print(f"C1 decode check: mean-distance ACC {acc:.4f}, "
+                  f"per-pixel-mode ACC {mode_acc:.4f}")
         auc = np.nan
         k = self.cfg.n_classes
         dist_cols = [f"msf_negdist_{i}" for i in range(k)]

@@ -53,6 +53,9 @@ def build_arg_parser():
     p.add_argument("--batch-size", type=int, default=128)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--beta", type=float, default=4.0)
+    p.add_argument("--size", type=int, default=32,
+                   help="generator resolution; 32 uses the 28px source (published), "
+                        "64 loads the native 64px MedMNIST source")
     p.add_argument("--warmup", type=int, default=10)
     p.add_argument("--snapshots", type=int, default=10)
     p.add_argument("--sample-freq", type=int, default=50)
@@ -87,11 +90,12 @@ def main():
            if meta["gen_flips"] else [])
     tf = transforms.Compose([
         *aug,
-        transforms.Resize(32),
+        transforms.Resize(args.size),
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,)),
     ])
-    full_train = ds_cls(split="train", download=True, transform=tf)
+    src_size = 28 if args.size == 32 else args.size   # 32 keeps the published 28->32 path
+    full_train = ds_cls(split="train", download=True, transform=tf, size=src_size)
     assert len(full_train) == meta["splits"][0], len(full_train)
     labels = np.array(full_train.labels).reshape(-1)
     gen_idx, clf_idx = gen_clf_split(labels, args.gen_frac, args.split_seed)
@@ -112,7 +116,7 @@ def main():
                               pin_memory=True, num_workers=args.num_workers)
     # Genuine val split, used only for the periodic sample visualisation during
     # training (the upstream repo used the TEST split here — kept out on purpose).
-    val_set = ds_cls(split="val", download=True, transform=tf)
+    val_set = ds_cls(split="val", download=True, transform=tf, size=src_size)
     val_loader = DataLoader(val_set, batch_size=16, shuffle=True, pin_memory=True)
 
     original_argv = sys.argv.copy()
@@ -131,7 +135,7 @@ def main():
     model_args.warmup = min(args.warmup, max(1, args.epochs // 2))
     model_args.beta = args.beta
     model_args.rgb_mask = True
-    model_args.size = 32
+    model_args.size = args.size
     model_args.no_wandb = True
     model_args.num_workers = args.num_workers
     model_args.snapshots = max(1, min(args.snapshots, args.epochs))
@@ -147,7 +151,7 @@ def main():
     model_args.mask_code = args.mask_code
     model_args.cfg_drop = args.cfg_drop
 
-    model = SymmFMClass(model_args, 32, meta["channels"])
+    model = SymmFMClass(model_args, args.size, meta["channels"])
     if args.init_checkpoint:
         model.load_checkpoint(args.init_checkpoint)
         print("warm-started from", args.init_checkpoint)
@@ -174,6 +178,7 @@ def main():
         "gen_frac": args.gen_frac, "split_seed": args.split_seed,
         "n_gen": len(gen_idx), "n_clf_pool": len(clf_idx),
         "gen_idx_sha1": split_fingerprint(gen_idx),
+        "size": args.size,
         "epochs": args.epochs, "batch_size": args.batch_size, "lr": args.lr,
         "dropout": args.dropout, "balance_classes": args.balance_classes,
         "mask_code": args.mask_code, "cfg_drop": args.cfg_drop,

@@ -61,6 +61,9 @@ def build_arg_parser():
     p.add_argument("--latent", action="store_true", default=False)
     p.add_argument("--num_workers", type=int, default=0)
     p.add_argument("--limit", type=int, default=None, help="debug: only classify N images")
+    p.add_argument("--ensemble", type=int, default=1,
+                   help=">1: average class distances over N reverse-flow noise draws "
+                        "(the paper is single-pass; this is our extension)")
     add_arch_cli(p)
     return p
 
@@ -126,6 +129,12 @@ def main():
         mask = model.segment(x.shape[0], x, train=False, eval=True)
         mean_p, mode_p = model.quantize_class(mask)
         d = model.distance_to_classes(mask)
+        for _ in range(args.ensemble - 1):
+            m2 = model.segment(x.shape[0], x, train=False, eval=True)
+            d = d + model.distance_to_classes(m2)
+        if args.ensemble > 1:
+            d = d / args.ensemble
+            mean_p = d.argmin(dim=1)      # ensemble decision from averaged distances
         mean_preds.extend(mean_p.long().cpu().numpy().tolist())
         mode_preds.extend(mode_p.long().cpu().numpy().tolist())
         dists.append(d.float().cpu().numpy())

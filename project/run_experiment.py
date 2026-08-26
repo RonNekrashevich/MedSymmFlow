@@ -76,6 +76,14 @@ def main():
     ap.add_argument("--gen-init-checkpoint", default=None,
                     help="disjoint mode: warm-start scratch generator training from "
                          "this checkpoint (external-corpus fine-tune variant)")
+    ap.add_argument("--syn-per-class", type=int, default=None,
+                    help="synthetic images generated per class (default: 1000 full / 200 quick)")
+    ap.add_argument("--exchange-sizes", type=int, nargs="+", default=None,
+                    help="run synthetic-only arms at these matched sizes (exchange-rate curve)")
+    ap.add_argument("--image-size", type=int, default=28, choices=[28, 64],
+                    help="classifier resolution (MedMNIST source size)")
+    ap.add_argument("--gen-size", type=int, default=32,
+                    help="generator resolution (32 = published 28->32; 64 = native 64px)")
     ap.add_argument("--run-tag", default="", help="label this run in the ledger")
     ap.add_argument("--legacy-filter", action="store_true",
                     help="reproduce the old (budget-dependent, leaky) filter semantics")
@@ -99,6 +107,8 @@ def main():
     cfg = Config(
         quick=args.quick,
         dataset=args.dataset,
+        image_size=args.image_size,
+        gen_image_size=args.gen_size,
         save_dir=str(out),
         medsymm_root=str(REPO),
         weights_root=args.weights_root,
@@ -114,6 +124,7 @@ def main():
         resume=not args.no_resume,
         run_tag=args.run_tag,
         **({"gen_beta": args.beta} if args.beta is not None else {}),
+        **({"syn_per_class": args.syn_per_class} if args.syn_per_class else {}),
         **({"gen_frac": args.gen_frac, "split_seed": args.split_seed,
             "gen_epochs": args.gen_epochs or (20 if args.quick else 600),
             "gen_lr": args.gen_lr, "gen_dropout": args.gen_dropout,
@@ -152,6 +163,7 @@ def main():
                         "--mask-code", cfg.gen_mask_code,
                         "--cfg-drop", str(cfg.gen_cfg_drop),
                         "--beta", str(cfg.gen_beta),
+                        "--size", str(cfg.gen_image_size),
                         *(["--balance-classes"] if cfg.gen_balance else []),
                         *(["--init-checkpoint", cfg.pretrain_checkpoint_path]
                           if cfg.gen_pretrain_epochs else []),
@@ -162,6 +174,9 @@ def main():
     print("== filtering =="); exp.filter_synthetic()
     print("== synthetic arms =="); exp.run_synthetic()
     print("== D1 diagnostic =="); exp.run_diagnostic_d1()
+    if args.exchange_sizes:
+        print("== exchange rate (synthetic-only at matched sizes) ==")
+        exp.run_exchange_rate(args.exchange_sizes)
     print("== C1 reference ==")
     if args.gen_frac:
         # The published C1 (0.952) came from a generator trained on ALL 4708 images
