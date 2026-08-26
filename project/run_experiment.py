@@ -97,6 +97,11 @@ def main():
     ap.add_argument("--gen-latent", action="store_true",
                     help="LatMSF: generator flows in SD-VAE latent space (use with "
                          "--gen-size 256 so latents are 32x32)")
+    ap.add_argument("--gen-model-channels", type=int, default=64,
+                    help="generator UNet width (64 = 9M published; 128 ~= 36M, the "
+                         "paper's LatMSF capacity)")
+    ap.add_argument("--gen-t-lognorm", action="store_true",
+                    help="SD3 logit-normal timestep sampling for generator training")
     ap.add_argument("--run-tag", default="", help="label this run in the ledger")
     ap.add_argument("--legacy-filter", action="store_true",
                     help="reproduce the old (budget-dependent, leaky) filter semantics")
@@ -148,7 +153,9 @@ def main():
             "gen_init_checkpoint": args.gen_init_checkpoint,
             "gen_mask_code": args.gen_mask_code,
             "gen_cfg_drop": args.gen_cfg_drop, "gen_cfg_w": args.gen_cfg_w,
-            "gen_latent": args.gen_latent}
+            "gen_latent": args.gen_latent,
+            "gen_model_channels": args.gen_model_channels,
+            "gen_t_lognorm": args.gen_t_lognorm}
            if args.gen_frac else {}),
         **({"external_checkpoint": args.external_checkpoint}
            if args.external_checkpoint else {}),
@@ -181,6 +188,8 @@ def main():
                         "--beta", str(cfg.gen_beta),
                         "--size", str(cfg.gen_image_size),
                         *(["--latent"] if cfg.gen_latent else []),
+                        "--model-channels", str(cfg.gen_model_channels),
+                        *(["--t-lognorm"] if cfg.gen_t_lognorm else []),
                         *(["--balance-classes"] if cfg.gen_balance else []),
                         *(["--init-checkpoint", cfg.pretrain_checkpoint_path]
                           if cfg.gen_pretrain_epochs else []),

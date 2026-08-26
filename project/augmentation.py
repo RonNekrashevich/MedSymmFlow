@@ -143,6 +143,8 @@ class Config:
         self.gen_cfg_w = 0.0              # >0: classifier-free guidance at sampling
         self.gen_latent = False           # LatMSF: flow in SD-VAE latent space
                                           # (use gen_image_size=256 -> 32x32 latents)
+        self.gen_model_channels = 64      # UNet width (128 ~= 36M, paper LatMSF scale)
+        self.gen_t_lognorm = False        # SD3 logit-normal timestep sampling
         # External-corpus generators (e.g. APTOS for retina):
         self.external_checkpoint = None   # use this checkpoint AS the generator; the
                                           # generator saw zero benchmark images, so the
@@ -180,6 +182,10 @@ class Config:
                 size_tag += "_lat"
             code_tag = "" if self.gen_mask_code == "rgb" else f"_mc-{self.gen_mask_code}"
             drop_tag = "" if not self.gen_cfg_drop else f"_cd{self.gen_cfg_drop}"
+            if self.gen_model_channels != 64:
+                drop_tag += f"_ch{self.gen_model_channels}"
+            if self.gen_t_lognorm:
+                drop_tag += "_ln"
             init_tag = ""
             if self.gen_init_checkpoint:
                 init_hash = hashlib.sha1(

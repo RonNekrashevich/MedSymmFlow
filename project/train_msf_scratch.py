@@ -60,6 +60,11 @@ def build_arg_parser():
     p.add_argument("--latent", action="store_true",
                    help="LatMSF: flow in the SD-VAE latent space (size/8 latents; "
                         "sensible only at --size 256, where latents are 32x32)")
+    p.add_argument("--model-channels", type=int, default=64,
+                   help="UNet width (64 = published 9M; 128 ~= 36M, matching the "
+                        "paper's LatMSF capacity)")
+    p.add_argument("--t-lognorm", action="store_true",
+                   help="logit-normal timestep sampling (SD3 recipe) instead of uniform")
     p.add_argument("--warmup", type=int, default=10)
     p.add_argument("--snapshots", type=int, default=10)
     p.add_argument("--sample-freq", type=int, default=50)
@@ -146,8 +151,9 @@ def main():
     model_args.num_workers = args.num_workers
     model_args.snapshots = max(1, min(args.snapshots, args.epochs))
     model_args.sample_and_save_freq = args.sample_freq
-    # Architecture of the published RGB_28 checkpoint (from its state-dict shapes).
-    model_args.model_channels = 64
+    # Architecture of the published RGB_28 checkpoint (from its state-dict shapes);
+    # --model-channels widens it (downstream scripts infer arch from the checkpoint).
+    model_args.model_channels = args.model_channels
     model_args.num_res_blocks = 2
     model_args.channel_mult = (1, 2, 2, 2)
     model_args.num_heads = 4
@@ -157,6 +163,7 @@ def main():
     model_args.mask_code = args.mask_code
     model_args.cfg_drop = args.cfg_drop
     model_args.latent = args.latent
+    model_args.t_lognorm = args.t_lognorm
 
     model = SymmFMClass(model_args, args.size, meta["channels"])
     if args.init_checkpoint:
@@ -186,6 +193,7 @@ def main():
         "n_gen": len(gen_idx), "n_clf_pool": len(clf_idx),
         "gen_idx_sha1": split_fingerprint(gen_idx),
         "size": args.size, "latent": args.latent,
+        "model_channels": args.model_channels, "t_lognorm": args.t_lognorm,
         "epochs": args.epochs, "batch_size": args.batch_size, "lr": args.lr,
         "dropout": args.dropout, "balance_classes": args.balance_classes,
         "mask_code": args.mask_code, "cfg_drop": args.cfg_drop,

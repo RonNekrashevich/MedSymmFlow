@@ -57,11 +57,17 @@ class SymmFMClass(nn.Module):
 
         # If using VAE, change the number of channels and image size accordingly
         if self.vae is not None:
-            assert self.mask_code == "rgb", "latent path supports the rgb code only"
             self.channels = 4
             self.img_size = self.img_size // 8
-            self.mask_dim = 4
-            self.model_channels = self.channels * 2
+            if self.mask_code in ("onehot", "thermometer"):
+                # Latent-native class codes: the label channels live directly on the
+                # latent grid and never pass through the VAE (no photo-prior
+                # distortion or encode noise on the label pathway, and
+                # classification needs no decode).
+                self.mask_dim = args.n_classes
+            else:
+                self.mask_dim = 4   # published LatMSF: palette mask encoded through the VAE
+            self.model_channels = self.channels + self.mask_dim
         else:
             if self.mask_code in ("onehot", "thermometer"):
                 self.mask_dim = args.n_classes
@@ -146,7 +152,12 @@ class SymmFMClass(nn.Module):
         - Image Generation Loss, Mask Generation Loss
         '''
         sigma_min = 1e-4
-        t = torch.rand(x.shape[0], device=x.device)
+        if getattr(self.args, "t_lognorm", False):
+            # SD3/Movie Gen recipe: logit-normal timestep sampling concentrates
+            # training on the informative mid-trajectory instead of uniform t.
+            t = torch.sigmoid(torch.randn(x.shape[0], device=x.device))
+        else:
+            t = torch.rand(x.shape[0], device=x.device)
 
         # Classifier-free guidance training: drop the class code on a random subset,
         # replacing it with the null (zero) code plus the usual dequantization noise.
@@ -242,10 +253,11 @@ class SymmFMClass(nn.Module):
             samples = x_0
 
         samples = samples[:, :self.channels]
-        
+
         if self.vae is not None:
             samples = self.decode(samples / 0.18215).sample
-            mask = self.decode(mask / 0.18215).sample
+            if self.mask_code == "rgb":   # latent-native code masks are not VAE latents
+                mask = self.decode(mask / 0.18215).sample
 
         samples = samples*0.5 + 0.5
         samples = samples.clamp(0, 1)
@@ -313,11 +325,9 @@ class SymmFMClass(nn.Module):
         :param train: if True, sample during training
         :param accelerate: Accelerator object
         '''
-        #x_0 = torch.randn(n_samples, 1, self.img_size, self.img_size, device=self.device)
-        if self.vae is not None:
-            x_0 = torch.randn(n_samples, self.channels, self.img_size, self.img_size, device=self.device)
-        else:
-            x_0 = torch.randn(n_samples, self.mask_dim, self.img_size, self.img_size, device=self.device)
+        # mask_dim covers every configuration (latent rgb: mask_dim == 4 == channels;
+        # latent-native K-codes: mask_dim == n_classes; pixel: as before)
+        x_0 = torch.randn(n_samples, self.mask_dim, self.img_size, self.img_size, device=self.device)
         x_0 = torch.cat([x, x_0], dim=1)
 
         if train:
@@ -347,9 +357,10 @@ class SymmFMClass(nn.Module):
             samples = x_0
 
         samples = samples[:, self.channels:]
-        
+
         if self.vae is not None:
-            samples = self.decode(samples / 0.18215).sample
+            if self.mask_code == "rgb":   # latent-native code masks are read directly
+                samples = self.decode(samples / 0.18215).sample
             x = self.decode(x / 0.18215).sample
 
         if eval:
@@ -587,10 +598,11 @@ class SymmFMClass(nn.Module):
                             # if x has one channel, make it 3 channels
                             if x.shape[1] == 1:
                                 x = torch.cat((x, x, x), dim=1)
-                            if mask.shape[1] == 1:
-                                mask = torch.cat((mask, mask, mask), dim=1)
                             x = self.encode(x).latent_dist.sample().mul_(0.18215)
-                            mask = self.encode(mask).latent_dist.mode().mul_(0.18215)
+                            if self.mask_code == "rgb":   # latent-native codes skip the VAE
+                                if mask.shape[1] == 1:
+                                    mask = torch.cat((mask, mask, mask), dim=1)
+                                mask = self.encode(mask).latent_dist.mode().mul_(0.18215)
 
                     optimizer.zero_grad()
                     loss_image, loss_mask = self.symmetrical_flow_matching_loss(x, mask)
@@ -624,10 +636,11 @@ class SymmFMClass(nn.Module):
                     with torch.no_grad():
                         if x.shape[1] == 1:
                             x = torch.cat((x, x, x), dim=1)
-                        if mask.shape[1] == 1:
-                            mask = torch.cat((mask, mask, mask), dim=1)
                         x = self.encode(x).latent_dist.sample().mul_(0.18215)
-                        mask = self.encode(mask).latent_dist.mode().mul_(0.18215)
+                        if self.mask_code == "rgb":   # latent-native codes skip the VAE
+                            if mask.shape[1] == 1:
+                                mask = torch.cat((mask, mask, mask), dim=1)
+                            mask = self.encode(mask).latent_dist.mode().mul_(0.18215)
                 self.sample(x.shape[0], mask, accelerate=accelerate)
                 #self.segment(x.shape[0], x, accelerate=accelerate)
             
