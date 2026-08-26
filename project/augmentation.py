@@ -148,6 +148,7 @@ class Config:
         self.gen_vae_id = None            # latent VAE: None = published SD-VAE;
                                           # e.g. REPA-E/e2e-sdvae-hf or a local dir
         self.gen_repa_weight = 0.0        # >0: DINOv2 mid-block alignment (U-REPA)
+        self.gen_repa_teacher = None      # None = dinov2_vits14; retfound:<path> etc.
         # External-corpus generators (e.g. APTOS for retina):
         self.external_checkpoint = None   # use this checkpoint AS the generator; the
                                           # generator saw zero benchmark images, so the
@@ -194,6 +195,9 @@ class Config:
                 drop_tag += f"_vae{vae_hash}"
             if self.gen_repa_weight:
                 drop_tag += f"_repa{self.gen_repa_weight}"
+                if self.gen_repa_teacher:
+                    drop_tag += "_rt" + hashlib.sha1(
+                        str(self.gen_repa_teacher).encode()).hexdigest()[:6]
             init_tag = ""
             if self.gen_init_checkpoint:
                 init_hash = hashlib.sha1(

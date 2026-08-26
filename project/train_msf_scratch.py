@@ -72,6 +72,9 @@ def build_arg_parser():
     p.add_argument("--repa-weight", type=float, default=0.0,
                    help=">0: U-REPA-style alignment of the UNet middle block to "
                         "frozen DINOv2-S tokens of the clean image (0.5 = REPA default)")
+    p.add_argument("--repa-teacher", type=str, default=None,
+                   help="alignment teacher: dinov2_vits14 (default) / dinov2_vitb14 / "
+                        "retfound:<local .pth path> (RETFound MAE ViT-L, HF-gated)")
     p.add_argument("--warmup", type=int, default=10)
     p.add_argument("--snapshots", type=int, default=10)
     p.add_argument("--sample-freq", type=int, default=50)
@@ -173,6 +176,7 @@ def main():
     model_args.t_lognorm = args.t_lognorm
     model_args.vae_id = args.vae_id
     model_args.repa_weight = args.repa_weight
+    model_args.repa_teacher = args.repa_teacher
 
     model = SymmFMClass(model_args, args.size, meta["channels"])
     if args.init_checkpoint:
@@ -204,6 +208,7 @@ def main():
         "size": args.size, "latent": args.latent,
         "model_channels": args.model_channels, "t_lognorm": args.t_lognorm,
         "vae_id": args.vae_id or "", "repa_weight": args.repa_weight,
+        "repa_teacher": args.repa_teacher or "",
         "epochs": args.epochs, "batch_size": args.batch_size, "lr": args.lr,
         "dropout": args.dropout, "balance_classes": args.balance_classes,
         "mask_code": args.mask_code, "cfg_drop": args.cfg_drop,

@@ -109,6 +109,9 @@ def main():
     ap.add_argument("--gen-repa-weight", type=float, default=0.0,
                     help=">0: U-REPA alignment of the generator's UNet middle block "
                          "to frozen DINOv2-S features (0.5 = REPA default)")
+    ap.add_argument("--gen-repa-teacher", type=str, default=None,
+                    help="alignment teacher: dinov2_vits14 (default) or "
+                         "retfound:<local .pth> (RETFound fundus foundation model)")
     ap.add_argument("--run-tag", default="", help="label this run in the ledger")
     ap.add_argument("--legacy-filter", action="store_true",
                     help="reproduce the old (budget-dependent, leaky) filter semantics")
@@ -164,7 +167,8 @@ def main():
             "gen_model_channels": args.gen_model_channels,
             "gen_t_lognorm": args.gen_t_lognorm,
             "gen_vae_id": args.gen_vae_id,
-            "gen_repa_weight": args.gen_repa_weight}
+            "gen_repa_weight": args.gen_repa_weight,
+            "gen_repa_teacher": args.gen_repa_teacher}
            if args.gen_frac else {}),
         **({"external_checkpoint": args.external_checkpoint}
            if args.external_checkpoint else {}),
@@ -202,6 +206,8 @@ def main():
                         *(["--vae-id", str(cfg.gen_vae_id)] if cfg.gen_vae_id else []),
                         *(["--repa-weight", str(cfg.gen_repa_weight)]
                           if cfg.gen_repa_weight else []),
+                        *(["--repa-teacher", str(cfg.gen_repa_teacher)]
+                          if cfg.gen_repa_teacher else []),
                         *(["--balance-classes"] if cfg.gen_balance else []),
                         *(["--init-checkpoint", cfg.pretrain_checkpoint_path]
                           if cfg.gen_pretrain_epochs else []),

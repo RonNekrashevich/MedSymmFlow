@@ -62,6 +62,17 @@ def build_arg_parser():
     p.add_argument("--snapshots", type=int, default=10)
     p.add_argument("--sample-freq", type=int, default=50)
     p.add_argument("--dropout", type=float, default=0.0)
+    p.add_argument("--size", type=int, default=32,
+                   help="training resolution (256 with --latent; the npz must hold "
+                        "images at >= this size, e.g. preprocess_aptos --size 256)")
+    p.add_argument("--latent", action="store_true",
+                   help="LatMSF: flow in VAE latent space (use --size 256)")
+    p.add_argument("--mask-code", default="rgb", choices=["rgb", "onehot", "thermometer"])
+    p.add_argument("--model-channels", type=int, default=64)
+    p.add_argument("--t-lognorm", action="store_true")
+    p.add_argument("--vae-id", type=str, default=None)
+    p.add_argument("--repa-weight", type=float, default=0.0)
+    p.add_argument("--repa-teacher", type=str, default=None)
     p.add_argument("--balance-classes", action="store_true")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--num-workers", type=int, default=2)
@@ -88,7 +99,7 @@ def main():
     tf = transforms.Compose([
         transforms.RandomHorizontalFlip(),
         transforms.RandomVerticalFlip(),
-        transforms.Resize(32),
+        transforms.Resize(args.size),
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,)),
     ])
@@ -119,12 +130,18 @@ def main():
     model_args.warmup = min(args.warmup, max(1, args.epochs // 2))
     model_args.beta = args.beta
     model_args.rgb_mask = True
-    model_args.size = 32
+    model_args.size = args.size
     model_args.no_wandb = True
     model_args.num_workers = args.num_workers
     model_args.snapshots = max(1, min(args.snapshots, args.epochs))
     model_args.sample_and_save_freq = args.sample_freq
-    model_args.model_channels = 64
+    model_args.latent = args.latent
+    model_args.mask_code = args.mask_code
+    model_args.t_lognorm = args.t_lognorm
+    model_args.vae_id = args.vae_id
+    model_args.repa_weight = args.repa_weight
+    model_args.repa_teacher = args.repa_teacher
+    model_args.model_channels = args.model_channels
     model_args.num_res_blocks = 2
     model_args.channel_mult = (1, 2, 2, 2)
     model_args.num_heads = 4
@@ -132,7 +149,7 @@ def main():
     model_args.attention_resolutions = (2,)
     model_args.dropout = args.dropout
 
-    model = SymmFMClass(model_args, 32, 3)
+    model = SymmFMClass(model_args, args.size, 3)
     n_params = sum(p.numel() for p in model.model.parameters())
     print(f"training: {n_params/1e6:.1f}M params, {args.epochs} epochs, "
           f"{len(train_loader)} steps/epoch")
@@ -141,7 +158,7 @@ def main():
     model.train_model(train_loader, val_loader)
 
     snap_dir = Path(models_dir) / "SymmetricalFlowMatchingClass"
-    pattern = f"FM_{args.tag}_beta{args.beta}_rgb_epoch*.pt"
+    pattern = f"{'LatFM' if args.latent else 'FM'}_{args.tag}_beta{args.beta}_rgb_epoch*.pt"
     snaps = [p for p in snap_dir.glob(pattern) if p.stat().st_mtime >= start - 60]
     assert snaps, f"no fresh snapshot matching {pattern} in {snap_dir}"
     latest = max(snaps, key=lambda p: int(p.stem.split("epoch")[1]))
@@ -153,6 +170,10 @@ def main():
         "corpus": Path(args.npz).name, "tag": args.tag, "n_train": len(labels),
         "per_class": counts, "epochs": args.epochs, "batch_size": args.batch_size,
         "lr": args.lr, "dropout": args.dropout, "balance_classes": args.balance_classes,
+        "size": args.size, "latent": args.latent, "mask_code": args.mask_code,
+        "model_channels": args.model_channels, "t_lognorm": args.t_lognorm,
+        "vae_id": args.vae_id or "", "repa_weight": args.repa_weight,
+        "repa_teacher": args.repa_teacher or "",
         "beta": args.beta, "seed": args.seed, "source_snapshot": latest.name,
         "trained_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }, indent=2))

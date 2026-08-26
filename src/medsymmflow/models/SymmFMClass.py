@@ -130,17 +130,51 @@ class SymmFMClass(nn.Module):
         # of the saved checkpoint, so inference stays drop-in compatible.
         self.repa_weight = float(getattr(args, "repa_weight", 0.0) or 0.0)
         if self.repa_weight > 0 and args.train:
-            self.repa_teacher = torch.hub.load("facebookresearch/dinov2",
-                                               "dinov2_vits14").to(self.device).eval()
+            teacher = getattr(args, "repa_teacher", None) or "dinov2_vits14"
+            if teacher.startswith("dinov2"):
+                self.repa_teacher = torch.hub.load("facebookresearch/dinov2",
+                                                   teacher).to(self.device).eval()
+                self._teacher_kind = "dinov2"
+            elif teacher.startswith("retfound:"):
+                # RETFound (Nature 2023): MAE ViT-L/16 fundus foundation model.
+                # Gated on HF -- download the .pth locally and pass its path.
+                import timm
+                sd = torch.load(teacher.split(":", 1)[1], map_location="cpu")
+                sd = sd.get("model", sd.get("teacher", sd))
+                self.repa_teacher = timm.create_model(
+                    "vit_large_patch16_224", num_classes=0, global_pool="")
+                missing = self.repa_teacher.load_state_dict(
+                    {k: v for k, v in sd.items()
+                     if not k.startswith("decoder") and k != "mask_token"},
+                    strict=False)
+                print("RETFound teacher loaded; missing keys:", len(missing.missing_keys))
+                self.repa_teacher = self.repa_teacher.to(self.device).eval()
+                self._teacher_kind = "timm"
+            else:
+                raise ValueError(f"unknown repa teacher {teacher!r}")
             for p in self.repa_teacher.parameters():
                 p.requires_grad = False
+            with torch.no_grad():
+                t = self._teacher_tokens(torch.zeros(1, 3, 224, 224, device=self.device))
+            self._repa_grid = int(round(t.shape[1] ** 0.5))
+            self._repa_dim = int(t.shape[2])
+            print(f"repa teacher {teacher}: {self._repa_grid}x{self._repa_grid} "
+                  f"tokens, dim {self._repa_dim}")
             mid_ch = args.model_channels * list(args.channel_mult)[-1]
             self.repa_proj = nn.Sequential(
                 nn.Linear(mid_ch, 1024), nn.SiLU(),
-                nn.Linear(1024, 384)).to(self.device)
+                nn.Linear(1024, self._repa_dim)).to(self.device)
             self._mid_feat = None
             self.model.middle_block.register_forward_hook(
                 lambda m, i, o: setattr(self, "_mid_feat", o))
+
+    def _teacher_tokens(self, x):
+        '''Patch tokens (B, N, D) from either teacher family, cls stripped.'''
+        if self._teacher_kind == "dinov2":
+            return self.repa_teacher.forward_features(x)["x_norm_patchtokens"]
+        out = self.repa_teacher.forward_features(x)          # timm ViT: (B, 1+N, D)
+        n = out.shape[1]
+        return out[:, 1:] if int(round((n - 1) ** 0.5)) ** 2 == n - 1 else out
 
         if args.train:
             self.ema = copy.deepcopy(self.model)
@@ -156,7 +190,7 @@ class SymmFMClass(nn.Module):
         x = ((x_pix * 0.5 + 0.5) - mean) / std
         x = torch.nn.functional.interpolate(x, size=(224, 224),
                                             mode="bilinear", align_corners=False)
-        return self.repa_teacher.forward_features(x)["x_norm_patchtokens"]  # (B,256,384)
+        return self._teacher_tokens(x)  # (B, N, D)
 
     def forward(self, x, t):
         '''
@@ -225,7 +259,7 @@ class SymmFMClass(nn.Module):
         # Alignment: hooked middle-block features of THIS (noisy) forward pass,
         # upsampled to the teacher's 16x16 token grid, projected to teacher dim.
         f = self._mid_feat
-        f = torch.nn.functional.interpolate(f, size=(16, 16),
+        f = torch.nn.functional.interpolate(f, size=(self._repa_grid, self._repa_grid),
                                             mode="bilinear", align_corners=False)
         f = self.repa_proj(f.flatten(2).transpose(1, 2))          # (B, 256, 384)
         loss_repa = (1 - torch.nn.functional.cosine_similarity(
