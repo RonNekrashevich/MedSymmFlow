@@ -88,6 +88,9 @@ def main():
                     help="synthetic images generated per class (default: 1000 full / 200 quick)")
     ap.add_argument("--exchange-sizes", type=int, nargs="+", default=None,
                     help="run synthetic-only arms at these matched sizes (exchange-rate curve)")
+    ap.add_argument("--scratch-clf", action="store_true",
+                    help="train classifiers from random init instead of ImageNet "
+                         "weights (matches the MedMNIST from-scratch protocol)")
     ap.add_argument("--image-size", type=int, default=28, choices=[28, 64, 128, 224],
                     help="classifier resolution (MedMNIST source size); 128/224 use "
                          "the standard ResNet-18 stem like the MedMNIST(224) baselines")
@@ -145,6 +148,7 @@ def main():
         seeds=(None if args.quick else args.seeds),
         budgets=(None if args.quick else args.budgets),
         filter_mode=args.filter_mode,
+        pretrained=not args.scratch_clf,
         self_filter_q=args.self_q,
         self_per_class=args.self_per_class,
         filter_scorer=args.filter_scorer,
