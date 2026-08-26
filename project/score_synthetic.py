@@ -47,6 +47,9 @@ def build_arg_parser():
     p.add_argument("--solver", default="euler")
     p.add_argument("--step_size", type=float, default=0.04)
     p.add_argument("--batch", type=int, default=128)
+    p.add_argument("--out-name", default="self_scores.csv",
+                   help="output CSV name inside the synthetic dir (use a distinct "
+                        "name for step-size variants so score files never collide)")
     p.add_argument("--rgb_mask", action="store_true", default=True)
     add_arch_cli(p)
     return p
@@ -110,10 +113,10 @@ def main():
     out["pred"] = preds
     out["margin"] = margins
     out["match"] = (out.pred == out.label).astype(int)
-    out.to_csv(syn_dir / "self_scores.csv", index=False)
+    out.to_csv(syn_dir / args.out_name, index=False)
     match_rate = out.groupby("label")["match"].mean().round(3).to_dict()
     print("round-trip match rate per class:", match_rate)
-    print("->", syn_dir / "self_scores.csv")
+    print("->", syn_dir / args.out_name)
 
 
 if __name__ == "__main__":
