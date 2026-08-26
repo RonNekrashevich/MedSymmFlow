@@ -251,6 +251,15 @@ class Experiment:
         c.save_dir.mkdir(parents=True, exist_ok=True)
         self.synthetic_dir = c.run_dir / f"synthetic_{c.image_size}"
         self.filtered_dir = c.run_dir / f"synthetic_{c.image_size}_filtered"
+        if c.image_size != 28 and not self.synthetic_dir.exists() \
+                and (c.run_dir / "synthetic_28").exists():
+            # Legacy layout: pre-rename runs (e.g. retina-64px) stored every pool
+            # under "synthetic_28" regardless of size. Reuse it -- regenerating
+            # would silently put new seeds on a different pool than the old ones,
+            # and its metadata.csv paths point into the legacy dir.
+            print("using legacy synthetic_28 pool dir for image_size", c.image_size)
+            self.synthetic_dir = c.run_dir / "synthetic_28"
+            self.filtered_dir = c.run_dir / "synthetic_28_filtered"
         self.results_path = c.run_dir / "results.csv"
         self.cache_dir = c.run_dir / "cache"        # embeddings + scorer probabilities
         self.models_dir = c.run_dir / "models"      # persisted B0 / S1-pretrain weights
