@@ -123,11 +123,40 @@ class SymmFMClass(nn.Module):
         self.palette = build_palette(4, 75)
         self._code_table = None
 
+        # U-REPA-style representation alignment (training-only regularizer):
+        # the UNet middle block -- the right alignment site for U-Nets per U-REPA
+        # (NeurIPS'25) -- is aligned to frozen DINOv2-S patch tokens of the CLEAN
+        # pixel image via a small trainable projector. The projector is not part
+        # of the saved checkpoint, so inference stays drop-in compatible.
+        self.repa_weight = float(getattr(args, "repa_weight", 0.0) or 0.0)
+        if self.repa_weight > 0 and args.train:
+            self.repa_teacher = torch.hub.load("facebookresearch/dinov2",
+                                               "dinov2_vits14").to(self.device).eval()
+            for p in self.repa_teacher.parameters():
+                p.requires_grad = False
+            mid_ch = args.model_channels * list(args.channel_mult)[-1]
+            self.repa_proj = nn.Sequential(
+                nn.Linear(mid_ch, 1024), nn.SiLU(),
+                nn.Linear(1024, 384)).to(self.device)
+            self._mid_feat = None
+            self.model.middle_block.register_forward_hook(
+                lambda m, i, o: setattr(self, "_mid_feat", o))
+
         if args.train:
             self.ema = copy.deepcopy(self.model)
             self.ema_rate = args.ema_rate
             for param in self.ema.parameters():
                 param.requires_grad = False
+
+    @torch.no_grad()
+    def repa_features(self, x_pix):
+        '''Frozen-teacher patch tokens of the clean PIXEL image ([-1,1], 3ch).'''
+        mean = torch.tensor([0.485, 0.456, 0.406], device=x_pix.device).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=x_pix.device).view(1, 3, 1, 1)
+        x = ((x_pix * 0.5 + 0.5) - mean) / std
+        x = torch.nn.functional.interpolate(x, size=(224, 224),
+                                            mode="bilinear", align_corners=False)
+        return self.repa_teacher.forward_features(x)["x_norm_patchtokens"]  # (B,256,384)
 
     def forward(self, x, t):
         '''
@@ -150,13 +179,15 @@ class SymmFMClass(nn.Module):
             self._code_table = t.to(self.device)
         return self._code_table
     
-    def symmetrical_flow_matching_loss(self, x, mask):
+    def symmetrical_flow_matching_loss(self, x, mask, teacher_tokens=None):
         '''
         Symmetrical flow matching loss
         :param x: input image
         :param mask: mask
+        :param teacher_tokens: optional frozen-encoder tokens for REPA alignment;
+            when given, a third loss (mean 1 - cosine over tokens) is returned
         Returns:
-        - Image Generation Loss, Mask Generation Loss
+        - Image Generation Loss, Mask Generation Loss (+ Alignment Loss if enabled)
         '''
         sigma_min = 1e-4
         if getattr(self.args, "t_lognorm", False):
@@ -187,7 +218,19 @@ class SymmFMClass(nn.Module):
         optimal_flow = torch.cat([optimal_flow_x, optimal_flow_mask], dim=1)
         predicted_flow = self.forward(input, t)
 
-        return (predicted_flow[:, :x.shape[1]] - optimal_flow[:, :x.shape[1]]).square().mean(), (predicted_flow[:, x.shape[1]:] - optimal_flow[:, x.shape[1]:]).square().mean()
+        loss_image = (predicted_flow[:, :x.shape[1]] - optimal_flow[:, :x.shape[1]]).square().mean()
+        loss_mask = (predicted_flow[:, x.shape[1]:] - optimal_flow[:, x.shape[1]:]).square().mean()
+        if teacher_tokens is None:
+            return loss_image, loss_mask
+        # Alignment: hooked middle-block features of THIS (noisy) forward pass,
+        # upsampled to the teacher's 16x16 token grid, projected to teacher dim.
+        f = self._mid_feat
+        f = torch.nn.functional.interpolate(f, size=(16, 16),
+                                            mode="bilinear", align_corners=False)
+        f = self.repa_proj(f.flatten(2).transpose(1, 2))          # (B, 256, 384)
+        loss_repa = (1 - torch.nn.functional.cosine_similarity(
+            f, teacher_tokens, dim=-1)).mean()
+        return loss_image, loss_mask, loss_repa
     
     @torch.no_grad()
     def encode(self, x):
@@ -574,7 +617,10 @@ class SymmFMClass(nn.Module):
 
         best_loss = float('inf')
 
-        optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.decay)
+        train_params = list(self.model.parameters())
+        if getattr(self, "repa_proj", None) is not None:
+            train_params += list(self.repa_proj.parameters())
+        optimizer = torch.optim.AdamW(train_params, lr=self.lr, weight_decay=self.decay)
         scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=self.lr, total_steps=self.n_epochs*len(train_loader), pct_start=self.warmup/self.n_epochs, anneal_strategy='cos', cycle_momentum=False, div_factor=self.lr/1e-6, final_div_factor=1)
 
         if  self.vae is None:
@@ -600,6 +646,12 @@ class SymmFMClass(nn.Module):
 
                 with accelerate.autocast():
 
+                    teacher_tokens = None
+                    if self.repa_weight > 0:
+                        # Teacher sees the CLEAN PIXEL image (before any VAE encode).
+                        x_pix = x if x.shape[1] == 3 else torch.cat((x, x, x), dim=1)
+                        teacher_tokens = self.repa_features(x_pix)
+
                     if self.vae is not None:
                         with torch.no_grad():
                             # if x has one channel, make it 3 channels
@@ -612,8 +664,12 @@ class SymmFMClass(nn.Module):
                                 mask = self.encode(mask).latent_dist.mode().mul_(self.vae_scale)
 
                     optimizer.zero_grad()
-                    loss_image, loss_mask = self.symmetrical_flow_matching_loss(x, mask)
+                    losses = self.symmetrical_flow_matching_loss(x, mask,
+                                                                 teacher_tokens=teacher_tokens)
+                    loss_image, loss_mask = losses[0], losses[1]
                     loss = self.image_weight*loss_image + (1.-self.image_weight)*loss_mask
+                    if len(losses) > 2:
+                        loss = loss + self.repa_weight * losses[2]
                     accelerate.backward(loss)
                 optimizer.step()
                 scheduler.step()

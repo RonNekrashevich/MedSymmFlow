@@ -147,6 +147,7 @@ class Config:
         self.gen_t_lognorm = False        # SD3 logit-normal timestep sampling
         self.gen_vae_id = None            # latent VAE: None = published SD-VAE;
                                           # e.g. REPA-E/e2e-sdvae-hf or a local dir
+        self.gen_repa_weight = 0.0        # >0: DINOv2 mid-block alignment (U-REPA)
         # External-corpus generators (e.g. APTOS for retina):
         self.external_checkpoint = None   # use this checkpoint AS the generator; the
                                           # generator saw zero benchmark images, so the
@@ -191,6 +192,8 @@ class Config:
             if self.gen_vae_id:
                 vae_hash = hashlib.sha1(str(self.gen_vae_id).encode()).hexdigest()[:8]
                 drop_tag += f"_vae{vae_hash}"
+            if self.gen_repa_weight:
+                drop_tag += f"_repa{self.gen_repa_weight}"
             init_tag = ""
             if self.gen_init_checkpoint:
                 init_hash = hashlib.sha1(
