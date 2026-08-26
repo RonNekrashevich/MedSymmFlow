@@ -101,6 +101,8 @@ class Config:
         # budget-N information leaks into a budget-500 arm.
         self.filter_mode = "keep_confident"     # none|keep_confident|keep_uncertain|random_match|self_consistent
         self.self_filter_q = 0.5                # self_consistent: per-class top fraction kept
+        self.self_per_class = None              # self_consistent: keep top-N per class instead
+                                                # (dose/balance-matched filtering from a big pool)
         self.filter_scorer = "local"            # none|local|full  (local = the arm's own model)
         self.filter_scorer_budget = None        # explicit override for ablations
         self.filter_scorer_seed = None
@@ -998,7 +1000,8 @@ class Experiment:
         return merged
 
     def _self_keep(self):
-        """Per-class keep mask: round-trip match AND margin in the class's top q."""
+        """Per-class keep mask: round-trip match AND margin in the class's top q
+        (or, with self_per_class set, the class's top-N matches by margin)."""
         c = self.cfg
         m = self.self_scores()
         keep = np.zeros(len(m), dtype=bool)
@@ -1007,8 +1010,15 @@ class Experiment:
             if cls.sum() == 0:
                 print(f"  WARNING: class {k} has zero self-consistent images")
                 continue
-            thr = np.quantile(m.margin.values[cls], 1.0 - c.self_filter_q)
-            keep |= cls & (m.margin.values >= thr)
+            if c.self_per_class:
+                idx = np.flatnonzero(cls)
+                if len(idx) < c.self_per_class:
+                    print(f"  WARNING: class {k} has only {len(idx)} matches "
+                          f"(< {c.self_per_class}); keeping all of them")
+                keep[idx[np.argsort(-m.margin.values[idx])][:c.self_per_class]] = True
+            else:
+                thr = np.quantile(m.margin.values[cls], 1.0 - c.self_filter_q)
+                keep |= cls & (m.margin.values >= thr)
         return keep
 
     def filtered_for(self, budget, seed):
@@ -1024,8 +1034,12 @@ class Experiment:
                         "checkpoint": Path(c.checkpoint_path).name,
                         "mem_quantile": c.mem_quantile, "embed_id": c.embed_id,
                         "dataset": c.dataset}
+            if c.self_per_class:  # added conditionally so q-mode keys stay stable
+                manifest["per_class"] = int(c.self_per_class)
             mhash = hashlib.sha1(json.dumps(manifest, sort_keys=True).encode()).hexdigest()[:8]
-            key = f"{c.dataset}_selfq{c.self_filter_q}_{mhash}"
+            tag = (f"selfn{c.self_per_class}" if c.self_per_class
+                   else f"selfq{c.self_filter_q}")
+            key = f"{c.dataset}_{tag}_{mhash}"
             out_dir = self.filters_dir / key
             meta_path = out_dir / "metadata.csv"
             if meta_path.exists():

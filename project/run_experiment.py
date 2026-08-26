@@ -46,6 +46,10 @@ def main():
     ap.add_argument("--self-q", type=float, default=0.5,
                     help="self_consistent: per-class top fraction kept by the "
                          "generator's own round-trip confidence")
+    ap.add_argument("--self-per-class", type=int, default=None,
+                    help="self_consistent: keep the top-N matches per class by margin "
+                         "instead of a fraction (dose- and balance-matched filtering "
+                         "from an oversized pool)")
     ap.add_argument("--filter-scorer", default="local", choices=["none", "local", "full"])
     ap.add_argument("--conf-thresh", type=float, default=0.60)
     ap.add_argument("--mem-reference", default="local", choices=["none", "local", "full"])
@@ -122,6 +126,7 @@ def main():
         budgets=(None if args.quick else args.budgets),
         filter_mode=args.filter_mode,
         self_filter_q=args.self_q,
+        self_per_class=args.self_per_class,
         filter_scorer=args.filter_scorer,
         conf_thresh=args.conf_thresh,
         mem_reference=args.mem_reference,
