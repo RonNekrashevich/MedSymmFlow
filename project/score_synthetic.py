@@ -52,6 +52,7 @@ def build_arg_parser():
                         "name for step-size variants so score files never collide)")
     p.add_argument("--rgb_mask", action="store_true", default=True)
     p.add_argument("--latent", action="store_true", default=False)
+    p.add_argument("--vae_id", type=str, default=None)
     add_arch_cli(p)
     return p
 
@@ -77,6 +78,7 @@ def main():
     model_args.beta = args.beta
     model_args.rgb_mask = True
     model_args.latent = args.latent
+    model_args.vae_id = args.vae_id
     model_args.size = args.image_size
     model_args.mask_code = args.mask_code
     apply_arch(model_args, arch)
@@ -105,7 +107,7 @@ def main():
             if model.vae is not None:   # latent path: segment() expects encoded input
                 if xs.shape[1] == 1:
                     xs = torch.cat((xs, xs, xs), dim=1)
-                xs = model.encode(xs).latent_dist.sample().mul_(0.18215)
+                xs = model.encode(xs).latent_dist.sample().mul_(model.vae_scale)
             mask = model.segment(xs.shape[0], xs, train=False, eval=True)
             d = model.distance_to_classes(mask).float().cpu().numpy()
             s = np.sort(d, axis=1)

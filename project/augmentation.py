@@ -145,6 +145,8 @@ class Config:
                                           # (use gen_image_size=256 -> 32x32 latents)
         self.gen_model_channels = 64      # UNet width (128 ~= 36M, paper LatMSF scale)
         self.gen_t_lognorm = False        # SD3 logit-normal timestep sampling
+        self.gen_vae_id = None            # latent VAE: None = published SD-VAE;
+                                          # e.g. REPA-E/e2e-sdvae-hf or a local dir
         # External-corpus generators (e.g. APTOS for retina):
         self.external_checkpoint = None   # use this checkpoint AS the generator; the
                                           # generator saw zero benchmark images, so the
@@ -186,6 +188,9 @@ class Config:
                 drop_tag += f"_ch{self.gen_model_channels}"
             if self.gen_t_lognorm:
                 drop_tag += "_ln"
+            if self.gen_vae_id:
+                vae_hash = hashlib.sha1(str(self.gen_vae_id).encode()).hexdigest()[:8]
+                drop_tag += f"_vae{vae_hash}"
             init_tag = ""
             if self.gen_init_checkpoint:
                 init_hash = hashlib.sha1(
@@ -782,6 +787,7 @@ class Experiment:
                    "--mask_code", c.gen_mask_code,
                    *(["--cfg_w", str(c.gen_cfg_w)] if c.gen_cfg_w else []),
                    *(["--latent"] if c.gen_latent else []),
+                   *(["--vae_id", str(c.gen_vae_id)] if c.gen_vae_id else []),
                    "--output_dir", str(out_dir)]
             env = dict(os.environ, PYTHONPATH=f"{c.medsymm_root}/src")
             print(f"generating {per_class}/class x {c.n_classes} classes")
@@ -999,6 +1005,7 @@ class Experiment:
                    "--image_size", str(c.gen_image_size), "--beta", str(c.gen_beta),
                    "--mask_code", c.gen_mask_code,
                    *(["--latent"] if c.gen_latent else []),
+                   *(["--vae_id", str(c.gen_vae_id)] if c.gen_vae_id else []),
                    "--solver", c.gen_solver, "--step_size", str(c.gen_step_size)]
             env = dict(os.environ, PYTHONPATH=f"{c.medsymm_root}/src")
             res = subprocess.run(cmd, cwd=c.medsymm_root, env=env,
@@ -1289,6 +1296,7 @@ class Experiment:
             "--image_size", str(c.gen_image_size), "--beta", str(c.gen_beta),
             "--rgb_mask", "--mask_code", c.gen_mask_code,
             *(["--latent", "--source_size", "224"] if c.gen_latent else []),
+            *(["--vae_id", str(c.gen_vae_id)] if c.gen_vae_id else []),
             "--solver", c.gen_solver, "--step_size", str(c.gen_step_size),
         ]
         env = dict(os.environ, PYTHONPATH=f"{c.medsymm_root}/src")

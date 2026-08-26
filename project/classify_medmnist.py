@@ -59,6 +59,7 @@ def build_arg_parser():
     p.add_argument("--rgb_mask", action="store_true", default=False)
     p.add_argument("--mask_code", default="rgb", choices=["rgb", "onehot", "thermometer"])
     p.add_argument("--latent", action="store_true", default=False)
+    p.add_argument("--vae_id", type=str, default=None)
     p.add_argument("--num_workers", type=int, default=0)
     p.add_argument("--limit", type=int, default=None, help="debug: only classify N images")
     p.add_argument("--ensemble", type=int, default=1,
@@ -98,6 +99,7 @@ def main():
     model_args.beta = args.beta
     model_args.rgb_mask = args.rgb_mask or arch["rgb_mask"]
     model_args.latent = args.latent
+    model_args.vae_id = args.vae_id
     model_args.size = args.image_size
     model_args.mask_code = args.mask_code
     apply_arch(model_args, arch)
@@ -129,7 +131,7 @@ def main():
         if model.vae is not None:   # latent path: segment() expects encoded input
             if x.shape[1] == 1:
                 x = torch.cat((x, x, x), dim=1)
-            x = model.encode(x).latent_dist.sample().mul_(0.18215)
+            x = model.encode(x).latent_dist.sample().mul_(model.vae_scale)
         mask = model.segment(x.shape[0], x, train=False, eval=True)
         mean_p, mode_p = model.quantize_class(mask)
         d = model.distance_to_classes(mask)

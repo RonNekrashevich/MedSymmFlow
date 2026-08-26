@@ -65,6 +65,10 @@ def build_arg_parser():
                         "paper's LatMSF capacity)")
     p.add_argument("--t-lognorm", action="store_true",
                    help="logit-normal timestep sampling (SD3 recipe) instead of uniform")
+    p.add_argument("--vae-id", type=str, default=None,
+                   help="latent mode: diffusers AutoencoderKL id or local dir "
+                        "(default stabilityai/sd-vae-ft-mse; e.g. REPA-E/e2e-sdvae-hf "
+                        "or an APTOS-fine-tuned checkpoint dir)")
     p.add_argument("--warmup", type=int, default=10)
     p.add_argument("--snapshots", type=int, default=10)
     p.add_argument("--sample-freq", type=int, default=50)
@@ -164,6 +168,7 @@ def main():
     model_args.cfg_drop = args.cfg_drop
     model_args.latent = args.latent
     model_args.t_lognorm = args.t_lognorm
+    model_args.vae_id = args.vae_id
 
     model = SymmFMClass(model_args, args.size, meta["channels"])
     if args.init_checkpoint:
@@ -194,6 +199,7 @@ def main():
         "gen_idx_sha1": split_fingerprint(gen_idx),
         "size": args.size, "latent": args.latent,
         "model_channels": args.model_channels, "t_lognorm": args.t_lognorm,
+        "vae_id": args.vae_id or "",
         "epochs": args.epochs, "batch_size": args.batch_size, "lr": args.lr,
         "dropout": args.dropout, "balance_classes": args.balance_classes,
         "mask_code": args.mask_code, "cfg_drop": args.cfg_drop,

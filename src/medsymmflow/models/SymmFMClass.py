@@ -42,7 +42,14 @@ class SymmFMClass(nn.Module):
         super(SymmFMClass, self).__init__()
         self.args = args
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.vae =  AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-mse").to(self.device) if args.latent else None
+        # vae_id: any diffusers AutoencoderKL id or local save_pretrained dir
+        # (default = the published SD-VAE; e.g. REPA-E/e2e-sdvae-hf, or an
+        # APTOS-fine-tuned checkpoint). The latent scale is read from the VAE's
+        # own config so replacements with a different scaling factor stay correct.
+        vae_id = getattr(args, "vae_id", None) or "stabilityai/sd-vae-ft-mse"
+        self.vae = AutoencoderKL.from_pretrained(vae_id).to(self.device) if args.latent else None
+        self.vae_scale = (float(getattr(self.vae.config, "scaling_factor", 0.18215) or 0.18215)
+                          if self.vae is not None else 0.18215)
         self.channels = in_channels
         self.img_size = img_size
         self.rgb_mask = args.rgb_mask
@@ -255,9 +262,9 @@ class SymmFMClass(nn.Module):
         samples = samples[:, :self.channels]
 
         if self.vae is not None:
-            samples = self.decode(samples / 0.18215).sample
+            samples = self.decode(samples / self.vae_scale).sample
             if self.mask_code == "rgb":   # latent-native code masks are not VAE latents
-                mask = self.decode(mask / 0.18215).sample
+                mask = self.decode(mask / self.vae_scale).sample
 
         samples = samples*0.5 + 0.5
         samples = samples.clamp(0, 1)
@@ -360,8 +367,8 @@ class SymmFMClass(nn.Module):
 
         if self.vae is not None:
             if self.mask_code == "rgb":   # latent-native code masks are read directly
-                samples = self.decode(samples / 0.18215).sample
-            x = self.decode(x / 0.18215).sample
+                samples = self.decode(samples / self.vae_scale).sample
+            x = self.decode(x / self.vae_scale).sample
 
         if eval:
             return samples
@@ -598,11 +605,11 @@ class SymmFMClass(nn.Module):
                             # if x has one channel, make it 3 channels
                             if x.shape[1] == 1:
                                 x = torch.cat((x, x, x), dim=1)
-                            x = self.encode(x).latent_dist.sample().mul_(0.18215)
+                            x = self.encode(x).latent_dist.sample().mul_(self.vae_scale)
                             if self.mask_code == "rgb":   # latent-native codes skip the VAE
                                 if mask.shape[1] == 1:
                                     mask = torch.cat((mask, mask, mask), dim=1)
-                                mask = self.encode(mask).latent_dist.mode().mul_(0.18215)
+                                mask = self.encode(mask).latent_dist.mode().mul_(self.vae_scale)
 
                     optimizer.zero_grad()
                     loss_image, loss_mask = self.symmetrical_flow_matching_loss(x, mask)
@@ -636,11 +643,11 @@ class SymmFMClass(nn.Module):
                     with torch.no_grad():
                         if x.shape[1] == 1:
                             x = torch.cat((x, x, x), dim=1)
-                        x = self.encode(x).latent_dist.sample().mul_(0.18215)
+                        x = self.encode(x).latent_dist.sample().mul_(self.vae_scale)
                         if self.mask_code == "rgb":   # latent-native codes skip the VAE
                             if mask.shape[1] == 1:
                                 mask = torch.cat((mask, mask, mask), dim=1)
-                            mask = self.encode(mask).latent_dist.mode().mul_(0.18215)
+                            mask = self.encode(mask).latent_dist.mode().mul_(self.vae_scale)
                 self.sample(x.shape[0], mask, accelerate=accelerate)
                 #self.segment(x.shape[0], x, accelerate=accelerate)
             
@@ -677,7 +684,7 @@ class SymmFMClass(nn.Module):
                 with torch.no_grad():
                     if x.shape[1] == 1:
                         x = torch.cat((x, x, x), dim=1)
-                    x = self.encode(x).latent_dist.sample().mul_(0.18215)
+                    x = self.encode(x).latent_dist.sample().mul_(self.vae_scale)
 
             predicted_masks = self.segment(x.shape[0], x, train=False, eval=True)
             distances.append(self.distance_to_classes(predicted_masks).cpu().numpy())

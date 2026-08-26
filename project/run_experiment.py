@@ -102,6 +102,10 @@ def main():
                          "paper's LatMSF capacity)")
     ap.add_argument("--gen-t-lognorm", action="store_true",
                     help="SD3 logit-normal timestep sampling for generator training")
+    ap.add_argument("--gen-vae-id", type=str, default=None,
+                    help="latent VAE: diffusers AutoencoderKL id or local dir "
+                         "(default SD-VAE; e.g. REPA-E/e2e-sdvae-hf, or the "
+                         "finetune_vae_aptos.py output dir)")
     ap.add_argument("--run-tag", default="", help="label this run in the ledger")
     ap.add_argument("--legacy-filter", action="store_true",
                     help="reproduce the old (budget-dependent, leaky) filter semantics")
@@ -155,7 +159,8 @@ def main():
             "gen_cfg_drop": args.gen_cfg_drop, "gen_cfg_w": args.gen_cfg_w,
             "gen_latent": args.gen_latent,
             "gen_model_channels": args.gen_model_channels,
-            "gen_t_lognorm": args.gen_t_lognorm}
+            "gen_t_lognorm": args.gen_t_lognorm,
+            "gen_vae_id": args.gen_vae_id}
            if args.gen_frac else {}),
         **({"external_checkpoint": args.external_checkpoint}
            if args.external_checkpoint else {}),
@@ -190,6 +195,7 @@ def main():
                         *(["--latent"] if cfg.gen_latent else []),
                         "--model-channels", str(cfg.gen_model_channels),
                         *(["--t-lognorm"] if cfg.gen_t_lognorm else []),
+                        *(["--vae-id", str(cfg.gen_vae_id)] if cfg.gen_vae_id else []),
                         *(["--balance-classes"] if cfg.gen_balance else []),
                         *(["--init-checkpoint", cfg.pretrain_checkpoint_path]
                           if cfg.gen_pretrain_epochs else []),
