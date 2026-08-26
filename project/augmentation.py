@@ -235,8 +235,8 @@ class Experiment:
             self.cfg.use_amp = False
         c = self.cfg
         c.save_dir.mkdir(parents=True, exist_ok=True)
-        self.synthetic_dir = c.run_dir / "synthetic_28"
-        self.filtered_dir = c.run_dir / "synthetic_28_filtered"
+        self.synthetic_dir = c.run_dir / f"synthetic_{c.image_size}"
+        self.filtered_dir = c.run_dir / f"synthetic_{c.image_size}_filtered"
         self.results_path = c.run_dir / "results.csv"
         self.cache_dir = c.run_dir / "cache"        # embeddings + scorer probabilities
         self.models_dir = c.run_dir / "models"      # persisted B0 / S1-pretrain weights
@@ -462,8 +462,10 @@ class Experiment:
         if arch != "resnet18":
             raise ValueError(f"arch {arch!r} not available yet (Stage B adds the registry)")
         model = resnet18(weights=ResNet18_Weights.DEFAULT if pretrained else None)
-        model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)  # 28px stem
-        model.maxpool = nn.Identity()
+        if self.cfg.image_size <= 64:
+            model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)  # 28px stem
+            model.maxpool = nn.Identity()
+        # else: keep the standard 7x7/stride-2 stem, matching MedMNIST's ResNet-18 (224)
         model.fc = nn.Linear(model.fc.in_features, num_classes)
         return model.to(self.device)
 

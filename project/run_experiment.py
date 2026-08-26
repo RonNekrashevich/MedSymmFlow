@@ -88,8 +88,9 @@ def main():
                     help="synthetic images generated per class (default: 1000 full / 200 quick)")
     ap.add_argument("--exchange-sizes", type=int, nargs="+", default=None,
                     help="run synthetic-only arms at these matched sizes (exchange-rate curve)")
-    ap.add_argument("--image-size", type=int, default=28, choices=[28, 64],
-                    help="classifier resolution (MedMNIST source size)")
+    ap.add_argument("--image-size", type=int, default=28, choices=[28, 64, 128, 224],
+                    help="classifier resolution (MedMNIST source size); 128/224 use "
+                         "the standard ResNet-18 stem like the MedMNIST(224) baselines")
     ap.add_argument("--gen-size", type=int, default=32,
                     help="generator resolution (32 = published 28->32; 64 = native 64px; "
                          "256 = MedMNIST+ 224px source, for --gen-latent)")
