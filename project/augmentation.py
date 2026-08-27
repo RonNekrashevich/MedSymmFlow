@@ -94,6 +94,7 @@ class Config:
         self.clf_stem = "small"           # "small": 3x3/stride-1 stem at <=64px;
                                           # "standard": keep torchvision's 7x7/stride-2
                                           # stem at every size (MedMNIST protocol)
+        self.heavy_aug_baseline = False   # B4: real data + TrivialAugmentWide
         self.batch_size = 64
         self.lr = 1e-4
         self.lr_finetune = 1e-5    # S1's fine-tune stage (was a literal 1e-5)
@@ -295,6 +296,17 @@ class Experiment:
             transforms.ToTensor(),
             transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
         ])
+        # B4 (heavy classical augmentation): TrivialAugmentWide ahead of the
+        # standard pipeline -- the strong free alternative to synthetic data.
+        self.heavy_tf = transforms.Compose([
+            transforms.TrivialAugmentWide(),
+            transforms.RandomHorizontalFlip(0.5),
+            transforms.RandomRotation(10),
+            transforms.RandomResizedCrop(c.image_size, scale=(0.8, 1.0)),
+            *to3,
+            transforms.ToTensor(),
+            transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+        ])
         self.embed_tf = transforms.Compose([
             *to3,
             transforms.Resize((224, 224)),
@@ -444,6 +456,9 @@ class Experiment:
         meta = dataset_meta(c.dataset)
         ds_cls = getattr(medmnist, meta["medmnist_class"])
         self.train_set = ds_cls(split="train", transform=self.train_tf, download=True, size=c.image_size)
+        if c.heavy_aug_baseline:
+            self.train_set_heavy = ds_cls(split="train", transform=self.heavy_tf,
+                                          download=True, size=c.image_size)
         self.val_set = ds_cls(split="val", transform=self.eval_tf, download=True, size=c.image_size)
         self.test_set = ds_cls(split="test", transform=self.eval_tf, download=True, size=c.image_size)
         n_tr, n_va, n_te = meta["splits"]
@@ -736,6 +751,16 @@ class Experiment:
                         print(f"  [skip] {arm} n={budget} seed={seed} (in ledger)")
                         continue
                     self.run_supervised(arm, sub, sub_labels, budget, seed, **kw)
+
+                if self.cfg.heavy_aug_baseline:
+                    # B4: real data + TrivialAugmentWide -- the strong FREE
+                    # alternative to synthetic augmentation. Same subset indices,
+                    # so it pairs seed-wise with every other arm.
+                    if self.already_done("B4", budget, seed):
+                        print(f"  [skip] B4 n={budget} seed={seed} (in ledger)")
+                    else:
+                        self.run_supervised("B4", Subset(self.train_set_heavy, idx),
+                                            sub_labels, budget, seed, weighted=False)
         if self.cfg.dataset == "pneumoniamnist":
             print("\nB0 reproduction target (protocol): ResNet-18 @28px AUC ~= 94.4")
 

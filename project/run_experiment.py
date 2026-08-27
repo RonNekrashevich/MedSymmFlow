@@ -94,6 +94,9 @@ def main():
     ap.add_argument("--scratch-clf", action="store_true",
                     help="train classifiers from random init instead of ImageNet "
                          "weights (matches the MedMNIST from-scratch protocol)")
+    ap.add_argument("--heavy-aug", action="store_true",
+                    help="add the B4 baseline: real data + TrivialAugmentWide (the "
+                         "strong free alternative to synthetic augmentation)")
     ap.add_argument("--std-stem", action="store_true",
                     help="keep torchvision's standard 7x7/stride-2 ResNet stem at "
                          "every size (with --scratch-clf: the MedMNIST/MSF-paper "
@@ -157,6 +160,7 @@ def main():
         filter_mode=args.filter_mode,
         pretrained=not args.scratch_clf,
         clf_stem=("standard" if args.std_stem else "small"),
+        heavy_aug_baseline=args.heavy_aug,
         self_filter_q=args.self_q,
         self_per_class=args.self_per_class,
         filter_scorer=args.filter_scorer,
