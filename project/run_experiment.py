@@ -84,6 +84,9 @@ def main():
     ap.add_argument("--gen-init-checkpoint", default=None,
                     help="disjoint mode: warm-start scratch generator training from "
                          "this checkpoint (external-corpus fine-tune variant)")
+    ap.add_argument("--gen-chunk", type=int, default=None,
+                    help="images per generation subprocess batch (default 200; use "
+                         "~50 for 256px latent decoding, whose VAE decoder OOMs at 200)")
     ap.add_argument("--syn-per-class", type=int, default=None,
                     help="synthetic images generated per class (default: 1000 full / 200 quick)")
     ap.add_argument("--exchange-sizes", type=int, nargs="+", default=None,
@@ -159,6 +162,7 @@ def main():
         run_tag=args.run_tag,
         **({"gen_beta": args.beta} if args.beta is not None else {}),
         **({"syn_per_class": args.syn_per_class} if args.syn_per_class else {}),
+        **({"gen_chunk": args.gen_chunk} if args.gen_chunk else {}),
         **({"gen_frac": args.gen_frac, "split_seed": args.split_seed,
             "gen_epochs": args.gen_epochs or (20 if args.quick else 600),
             "gen_lr": args.gen_lr, "gen_dropout": args.gen_dropout,
