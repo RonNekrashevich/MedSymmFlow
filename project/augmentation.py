@@ -334,8 +334,14 @@ class Experiment:
         torch.cuda.manual_seed_all(seed)
 
     def loader(self, ds, batch_size=64, shuffle=False, sampler=None):
+        # A trailing batch of exactly 1 crashes BatchNorm in training mode when the
+        # feature map is 1x1 (standard stem at 28px). Drop it on training loaders
+        # only; it carries no usable BN statistics anyway.
+        training = shuffle or sampler is not None
+        drop_last = training and len(ds) % batch_size == 1
         return DataLoader(ds, batch_size=batch_size, shuffle=(shuffle and sampler is None),
-                          sampler=sampler, num_workers=2, pin_memory=True)
+                          sampler=sampler, num_workers=2, pin_memory=True,
+                          drop_last=drop_last)
 
     def _savefig(self, name):
         # Persist the current figure to fig_dir for headless/batch runs (no-op interactively).
