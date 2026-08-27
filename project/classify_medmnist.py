@@ -60,6 +60,12 @@ def build_arg_parser():
     p.add_argument("--mask_code", default="rgb", choices=["rgb", "onehot", "thermometer"])
     p.add_argument("--latent", action="store_true", default=False)
     p.add_argument("--vae_id", type=str, default=None)
+    p.add_argument("--seg_t_start", type=float, default=1.0,
+                   help="start time of the reverse integration (default 1.0)")
+    p.add_argument("--seg_t_end", type=float, default=0.0,
+                   help="time at which the class code is read (default 0.0; try 0.1 "
+                        "for generators trained with logit-normal timesteps, whose "
+                        "endpoints are weakly trained)")
     p.add_argument("--num_workers", type=int, default=0)
     p.add_argument("--limit", type=int, default=None, help="debug: only classify N images")
     p.add_argument("--ensemble", type=int, default=1,
@@ -100,6 +106,8 @@ def main():
     model_args.rgb_mask = args.rgb_mask or arch["rgb_mask"]
     model_args.latent = args.latent
     model_args.vae_id = args.vae_id
+    model_args.seg_t_start = args.seg_t_start
+    model_args.seg_t_end = args.seg_t_end
     model_args.size = args.image_size
     model_args.mask_code = args.mask_code
     apply_arch(model_args, arch)

@@ -128,6 +128,12 @@ class SymmFMClass(nn.Module):
         # (NeurIPS'25) -- is aligned to frozen DINOv2-S patch tokens of the CLEAN
         # pixel image via a small trainable projector. The projector is not part
         # of the saved checkpoint, so inference stays drop-in compatible.
+        # Reverse-flow integration window for classification. Defaults to the full
+        # 1 -> 0 sweep. With logit-normal timestep training the endpoints are
+        # weakly trained, so reading the code slightly inside the interval can be
+        # more reliable (the code is already almost converged at t = 0.1).
+        self.seg_t_start = float(getattr(args, "seg_t_start", 1.0) or 1.0)
+        self.seg_t_end = float(getattr(args, "seg_t_end", 0.0) or 0.0)
         self.repa_weight = float(getattr(args, "repa_weight", 0.0) or 0.0)
         if self.repa_weight > 0 and args.train:
             teacher = getattr(args, "repa_teacher", None) or "dinov2_vits14"
@@ -411,7 +417,10 @@ class SymmFMClass(nn.Module):
         '''
         # mask_dim covers every configuration (latent rgb: mask_dim == 4 == channels;
         # latent-native K-codes: mask_dim == n_classes; pixel: as before)
-        x_0 = torch.randn(n_samples, self.mask_dim, self.img_size, self.img_size, device=self.device)
+        # Scaling the initial noise by seg_t_start keeps it close to the marginal
+        # of the code channels at that time (they are pure noise at t = 1).
+        x_0 = torch.randn(n_samples, self.mask_dim, self.img_size, self.img_size,
+                          device=self.device) * self.seg_t_start
         x_0 = torch.cat([x, x_0], dim=1)
 
         if train:
@@ -420,18 +429,19 @@ class SymmFMClass(nn.Module):
         else:
             def f(t: float, x):
                 return self.forward(x, torch.full(x.shape[:1], t, device=self.device))
-        
+
+        t_span = torch.linspace(self.seg_t_start, self.seg_t_end, 2).to(self.device)
         if self.solver_lib == 'torchdiffeq':
             if self.solver == 'euler' or self.solver == 'rk4' or self.solver == 'midpoint' or self.solver == 'explicit_adams' or self.solver == 'implicit_adams':
-                samples = odeint(f, x_0, t=torch.linspace(1, 0, 2).to(self.device), options={'step_size': self.step_size}, method=self.solver, rtol=1e-5, atol=1e-5)
+                samples = odeint(f, x_0, t=t_span, options={'step_size': self.step_size}, method=self.solver, rtol=1e-5, atol=1e-5)
             else:
-                samples = odeint(f, x_0, t=torch.linspace(1, 0, 2).to(self.device), method=self.solver, options={'max_num_steps': 1//self.step_size}, rtol=1e-5, atol=1e-5)
+                samples = odeint(f, x_0, t=t_span, method=self.solver, options={'max_num_steps': 1//self.step_size}, rtol=1e-5, atol=1e-5)
             samples = samples[1]
         elif self.solver_lib == 'zuko':
-            samples = zuko.utils.odeint(f, x_0, 1, 0, phi=self.model.parameters(), atol=1e-5, rtol=1e-5)
+            samples = zuko.utils.odeint(f, x_0, self.seg_t_start, self.seg_t_end, phi=self.model.parameters(), atol=1e-5, rtol=1e-5)
         else:
-            t=1
-            for i in tqdm(range(int(1/self.step_size)), desc='Sampling', leave=False):
+            t=self.seg_t_start
+            for i in tqdm(range(max(1, int((self.seg_t_start - self.seg_t_end)/self.step_size))), desc='Sampling', leave=False):
                 if train:
                     v = self.ema(x_0, torch.full(x_0.shape[:1], t, device=self.device))
                 else:
