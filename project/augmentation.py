@@ -91,6 +91,9 @@ class Config:
         self.arch = "resnet18"
         self.mixup_alpha = 0.2     # B3: the modern-augmentation baseline synthetic must beat
         self.pretrained = True
+        self.clf_stem = "small"           # "small": 3x3/stride-1 stem at <=64px;
+                                          # "standard": keep torchvision's 7x7/stride-2
+                                          # stem at every size (MedMNIST protocol)
         self.batch_size = 64
         self.lr = 1e-4
         self.lr_finetune = 1e-5    # S1's fine-tune stage (was a literal 1e-5)
@@ -489,7 +492,7 @@ class Experiment:
         if arch != "resnet18":
             raise ValueError(f"arch {arch!r} not available yet (Stage B adds the registry)")
         model = resnet18(weights=ResNet18_Weights.DEFAULT if pretrained else None)
-        if self.cfg.image_size <= 64:
+        if self.cfg.image_size <= 64 and self.cfg.clf_stem == "small":
             model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)  # 28px stem
             model.maxpool = nn.Identity()
         # else: keep the standard 7x7/stride-2 stem, matching MedMNIST's ResNet-18 (224)

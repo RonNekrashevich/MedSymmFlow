@@ -94,6 +94,10 @@ def main():
     ap.add_argument("--scratch-clf", action="store_true",
                     help="train classifiers from random init instead of ImageNet "
                          "weights (matches the MedMNIST from-scratch protocol)")
+    ap.add_argument("--std-stem", action="store_true",
+                    help="keep torchvision's standard 7x7/stride-2 ResNet stem at "
+                         "every size (with --scratch-clf: the MedMNIST/MSF-paper "
+                         "baseline ResNet-18 exactly)")
     ap.add_argument("--image-size", type=int, default=28, choices=[28, 64, 128, 224],
                     help="classifier resolution (MedMNIST source size); 128/224 use "
                          "the standard ResNet-18 stem like the MedMNIST(224) baselines")
@@ -152,6 +156,7 @@ def main():
         budgets=(None if args.quick else args.budgets),
         filter_mode=args.filter_mode,
         pretrained=not args.scratch_clf,
+        clf_stem=("standard" if args.std_stem else "small"),
         self_filter_q=args.self_q,
         self_per_class=args.self_per_class,
         filter_scorer=args.filter_scorer,
