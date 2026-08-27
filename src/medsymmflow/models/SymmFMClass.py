@@ -168,6 +168,12 @@ class SymmFMClass(nn.Module):
             self.model.middle_block.register_forward_hook(
                 lambda m, i, o: setattr(self, "_mid_feat", o))
 
+        if args.train:
+            self.ema = copy.deepcopy(self.model)
+            self.ema_rate = args.ema_rate
+            for param in self.ema.parameters():
+                param.requires_grad = False
+
     def _teacher_tokens(self, x):
         '''Patch tokens (B, N, D) from either teacher family, cls stripped.'''
         if self._teacher_kind == "dinov2":
@@ -175,12 +181,6 @@ class SymmFMClass(nn.Module):
         out = self.repa_teacher.forward_features(x)          # timm ViT: (B, 1+N, D)
         n = out.shape[1]
         return out[:, 1:] if int(round((n - 1) ** 0.5)) ** 2 == n - 1 else out
-
-        if args.train:
-            self.ema = copy.deepcopy(self.model)
-            self.ema_rate = args.ema_rate
-            for param in self.ema.parameters():
-                param.requires_grad = False
 
     @torch.no_grad()
     def repa_features(self, x_pix):
