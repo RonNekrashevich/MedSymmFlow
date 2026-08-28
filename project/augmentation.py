@@ -105,6 +105,9 @@ class Config:
         # budget-N information leaks into a budget-500 arm.
         self.filter_mode = "keep_confident"     # none|keep_confident|keep_uncertain|random_match|self_consistent
         self.self_filter_q = 0.5                # self_consistent: per-class top fraction kept
+        self.fixed_total = None                 # >0: extra arm that tops the real
+                                                # budget up to this many images with
+                                                # synthetic ones (size-matched study)
         self.self_filter_by = "margin"          # margin | dmin | dtrue
                                                 # margin: top-two gap (decisiveness)
                                                 # dmin/dtrue: distance to the winning /
@@ -1301,6 +1304,31 @@ class Experiment:
                                         np.concatenate([sub_labels, np.array(add_df.label)]),
                                         budget, seed, weighted=False,
                                         filter_key=fkey, n_syn_used=len(add_df))
+
+                if self.cfg.fixed_total and self.cfg.fixed_total > budget:
+                    # Size-matched substitution: keep the TOTAL number of training
+                    # images fixed and vary how many of them are real. Comparable
+                    # to a classifier trained on the same total of real images.
+                    if self.already_done("S5", budget, seed, fkey):
+                        print(f"  [skip] S5 n={budget} seed={seed}")
+                    else:
+                        need = int(self.cfg.fixed_total - budget)
+                        rng5 = np.random.default_rng(20000 + seed)
+                        per = need // self.cfg.n_classes
+                        picks = []
+                        for k in range(self.cfg.n_classes):
+                            syn_k = syn_df[syn_df.label == k]
+                            take = min(per, len(syn_k))
+                            if take:
+                                picks.append(syn_k.iloc[
+                                    rng5.choice(len(syn_k), size=take, replace=False)])
+                        add5 = (pd.concat(picks, ignore_index=True) if picks
+                                else syn_df.iloc[:0])
+                        ds5 = ConcatDataset([IntLabel(real_sub), self._synth_ds(add5)])
+                        self.run_supervised("S5", ds5,
+                                            np.concatenate([sub_labels, np.array(add5.label)]),
+                                            budget, seed, weighted=False,
+                                            filter_key=fkey, n_syn_used=len(add5))
 
     def run_exchange_rate(self, sizes):
         """DX: synthetic-only training at matched sizes -- the synthetic-vs-real

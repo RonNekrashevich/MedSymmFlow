@@ -46,6 +46,10 @@ def main():
     ap.add_argument("--self-q", type=float, default=0.5,
                     help="self_consistent: per-class top fraction kept by the "
                          "generator's own round-trip confidence")
+    ap.add_argument("--fixed-total", type=int, default=None,
+                    help="extra arm: top the real budget up to this many images with "
+                         "synthetic ones, keeping the total training-set size fixed "
+                         "(comparable to training on that many real images)")
     ap.add_argument("--self-filter-by", default="margin",
                     choices=["margin", "dmin", "dtrue"],
                     help="rank synthetic images by the top-two margin (ours) or by "
@@ -173,6 +177,7 @@ def main():
         self_per_class=args.self_per_class,
         self_score_batch=args.self_score_batch,
         self_filter_by=args.self_filter_by,
+        fixed_total=args.fixed_total,
         filter_scorer=args.filter_scorer,
         conf_thresh=args.conf_thresh,
         mem_reference=args.mem_reference,
