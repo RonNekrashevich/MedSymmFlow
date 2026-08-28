@@ -46,6 +46,9 @@ def main():
     ap.add_argument("--self-q", type=float, default=0.5,
                     help="self_consistent: per-class top fraction kept by the "
                          "generator's own round-trip confidence")
+    ap.add_argument("--self-score-batch", type=int, default=None,
+                    help="batch size when the generator scores its own pool "
+                         "(default: --gen-chunk in latent mode, else 128)")
     ap.add_argument("--self-per-class", type=int, default=None,
                     help="self_consistent: keep the top-N matches per class by margin "
                          "instead of a fraction (dose- and balance-matched filtering "
@@ -163,6 +166,7 @@ def main():
         heavy_aug_baseline=args.heavy_aug,
         self_filter_q=args.self_q,
         self_per_class=args.self_per_class,
+        self_score_batch=args.self_score_batch,
         filter_scorer=args.filter_scorer,
         conf_thresh=args.conf_thresh,
         mem_reference=args.mem_reference,

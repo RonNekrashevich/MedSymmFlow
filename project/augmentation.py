@@ -105,6 +105,8 @@ class Config:
         # budget-N information leaks into a budget-500 arm.
         self.filter_mode = "keep_confident"     # none|keep_confident|keep_uncertain|random_match|self_consistent
         self.self_filter_q = 0.5                # self_consistent: per-class top fraction kept
+        self.self_score_batch = None            # self_consistent: scoring batch size
+                                                # (default: gen_chunk in latent mode, else 128)
         self.self_per_class = None              # self_consistent: keep top-N per class instead
                                                 # (dose/balance-matched filtering from a big pool)
         self.filter_scorer = "local"            # none|local|full  (local = the arm's own model)
@@ -1056,6 +1058,8 @@ class Experiment:
                    "--mask_code", c.gen_mask_code,
                    *(["--latent"] if c.gen_latent else []),
                    *(["--vae_id", str(c.gen_vae_id)] if c.gen_vae_id else []),
+                   "--batch", str(c.self_score_batch or
+                                  (c.gen_chunk if c.gen_latent else 128)),
                    "--solver", c.gen_solver, "--step_size", str(c.gen_step_size)]
             env = dict(os.environ, PYTHONPATH=f"{c.medsymm_root}/src")
             res = subprocess.run(cmd, cwd=c.medsymm_root, env=env,
