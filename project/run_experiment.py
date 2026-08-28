@@ -46,6 +46,11 @@ def main():
     ap.add_argument("--self-q", type=float, default=0.5,
                     help="self_consistent: per-class top fraction kept by the "
                          "generator's own round-trip confidence")
+    ap.add_argument("--self-filter-by", default="margin",
+                    choices=["margin", "dmin", "dtrue"],
+                    help="rank synthetic images by the top-two margin (ours) or by "
+                         "the distance to the winning / requested class code (the "
+                         "convention used in the MedSymmFlow paper)")
     ap.add_argument("--self-score-batch", type=int, default=None,
                     help="batch size when the generator scores its own pool "
                          "(default: --gen-chunk in latent mode, else 128)")
@@ -167,6 +172,7 @@ def main():
         self_filter_q=args.self_q,
         self_per_class=args.self_per_class,
         self_score_batch=args.self_score_batch,
+        self_filter_by=args.self_filter_by,
         filter_scorer=args.filter_scorer,
         conf_thresh=args.conf_thresh,
         mem_reference=args.mem_reference,

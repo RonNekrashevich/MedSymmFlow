@@ -98,7 +98,7 @@ def main():
     pool = pd.read_csv(syn_dir / "metadata.csv")
     print(f"scoring {len(pool)} synthetic images with their own generator")
 
-    preds, margins = [], []
+    preds, margins, dmins, dtrues = [], [], [], []
     with torch.no_grad():
         for i in range(0, len(pool), args.batch):
             chunk = pool.iloc[i:i + args.batch]
@@ -113,12 +113,16 @@ def main():
             s = np.sort(d, axis=1)
             preds.extend(d.argmin(axis=1).tolist())
             margins.extend((s[:, 1] - s[:, 0]).tolist())   # runner-up minus best
+            dmins.extend(s[:, 0].tolist())                 # distance to the winner
+            dtrues.extend(d[np.arange(len(d)), chunk.label.values].tolist())
             if (i // args.batch) % 5 == 0:
                 print(f"  {i + len(chunk)}/{len(pool)}")
 
     out = pool[["image_path", "label"]].copy()
     out["pred"] = preds
     out["margin"] = margins
+    out["dmin"] = dmins        # published convention: small = confident
+    out["dtrue"] = dtrues      # distance to the requested class
     out["match"] = (out.pred == out.label).astype(int)
     out.to_csv(syn_dir / args.out_name, index=False)
     match_rate = out.groupby("label")["match"].mean().round(3).to_dict()

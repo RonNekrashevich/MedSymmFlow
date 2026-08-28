@@ -105,6 +105,11 @@ class Config:
         # budget-N information leaks into a budget-500 arm.
         self.filter_mode = "keep_confident"     # none|keep_confident|keep_uncertain|random_match|self_consistent
         self.self_filter_q = 0.5                # self_consistent: per-class top fraction kept
+        self.self_filter_by = "margin"          # margin | dmin | dtrue
+                                                # margin: top-two gap (decisiveness)
+                                                # dmin/dtrue: distance to the winning /
+                                                # requested code (published convention,
+                                                # small = confident)
         self.self_score_batch = None            # self_consistent: scoring batch size
                                                 # (default: gen_chunk in latent mode, else 128)
         self.self_per_class = None              # self_consistent: keep top-N per class instead
@@ -1069,8 +1074,14 @@ class Experiment:
                 print(res.stderr[-2000:])
                 raise RuntimeError("self-consistency scoring failed")
         s = pd.read_csv(path)
+        keep_cols = ["image_path", "pred", "margin", "match"]
+        for extra in ("dmin", "dtrue"):
+            if extra in s.columns:
+                keep_cols.append(extra)
+        assert c.self_filter_by in ("margin",) or c.self_filter_by in s.columns, (
+            f"{path} predates --self-filter-by {c.self_filter_by}; delete it to rescore")
         merged = self.synthetic_meta.merge(
-            s[["image_path", "pred", "margin", "match"]], on="image_path", how="left")
+            s[keep_cols], on="image_path", how="left")
         assert not merged.pred.isna().any(), "self_scores.csv does not cover the pool"
         return merged
 
@@ -1085,15 +1096,19 @@ class Experiment:
             if cls.sum() == 0:
                 print(f"  WARNING: class {k} has zero self-consistent images")
                 continue
+            # margin: larger is more confident. dmin/dtrue: smaller is.
+            score = m[c.self_filter_by].values
+            if c.self_filter_by != "margin":
+                score = -score
             if c.self_per_class:
                 idx = np.flatnonzero(cls)
                 if len(idx) < c.self_per_class:
                     print(f"  WARNING: class {k} has only {len(idx)} matches "
                           f"(< {c.self_per_class}); keeping all of them")
-                keep[idx[np.argsort(-m.margin.values[idx])][:c.self_per_class]] = True
+                keep[idx[np.argsort(-score[idx])][:c.self_per_class]] = True
             else:
-                thr = np.quantile(m.margin.values[cls], 1.0 - c.self_filter_q)
-                keep |= cls & (m.margin.values >= thr)
+                thr = np.quantile(score[cls], 1.0 - c.self_filter_q)
+                keep |= cls & (score >= thr)
         return keep
 
     def filtered_for(self, budget, seed):
@@ -1111,9 +1126,13 @@ class Experiment:
                         "dataset": c.dataset}
             if c.self_per_class:  # added conditionally so q-mode keys stay stable
                 manifest["per_class"] = int(c.self_per_class)
+            if c.self_filter_by != "margin":   # keeps existing margin keys unchanged
+                manifest["by"] = c.self_filter_by
             mhash = hashlib.sha1(json.dumps(manifest, sort_keys=True).encode()).hexdigest()[:8]
             tag = (f"selfn{c.self_per_class}" if c.self_per_class
                    else f"selfq{c.self_filter_q}")
+            if c.self_filter_by != "margin":
+                tag += f"-{c.self_filter_by}"
             key = f"{c.dataset}_{tag}_{mhash}"
             out_dir = self.filters_dir / key
             meta_path = out_dir / "metadata.csv"
